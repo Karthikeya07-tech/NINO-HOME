@@ -1,5 +1,6 @@
 package com.example.nino_home.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,10 +22,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -45,6 +51,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
+import kotlin.math.roundToInt
 
 private enum class HomeTab(val title: String) {
     Music("My Music"),
@@ -57,6 +64,7 @@ private enum class HomeTab(val title: String) {
 fun HomeScreen() {
     val colors = MaterialTheme.colorScheme
     var selectedTab by remember { mutableStateOf(HomeTab.Create) }
+    var showBotDetail by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -70,6 +78,23 @@ fun HomeScreen() {
 
     DisposableEffect(Unit) {
         onDispose { homeViewModel.stopBotDiscovery() }
+    }
+
+    if (showBotDetail) {
+        BotDetailScreen(
+            selectedBot = homeUiState.selectedBot,
+            isLoadingStatus = homeUiState.isLoadingStatus,
+            botStatus = homeUiState.botStatus,
+            statusError = homeUiState.statusError,
+            onVolumeChange = { volume ->
+                homeUiState.selectedBot?.let { homeViewModel.setVolume(it, volume) }
+            },
+            onBack = {
+                showBotDetail = false
+                homeViewModel.clearBotSelection()
+            },
+        )
+        return
     }
 
     Scaffold(
@@ -105,12 +130,10 @@ fun HomeScreen() {
                 discoveryError = homeUiState.discoveryError,
                 onRefreshBots = { homeViewModel.startBotDiscovery() },
                 onClearError = homeViewModel::clearDiscoveryError,
-                selectedBot = homeUiState.selectedBot,
-                isLoadingStatus = homeUiState.isLoadingStatus,
-                botStatus = homeUiState.botStatus,
-                statusError = homeUiState.statusError,
-                onClearStatusError = homeViewModel::clearStatusError,
-                onBotTapped = homeViewModel::fetchBotStatus,
+                onBotTapped = { bot ->
+                    homeViewModel.fetchBotStatus(bot)
+                    showBotDetail = true
+                },
             )
             HomeTab.Configure -> ProvisionScreen(
                 showTopBar = false,
@@ -129,11 +152,6 @@ private fun CreateLanding(
     discoveryError: String?,
     onRefreshBots: () -> Unit,
     onClearError: () -> Unit,
-    selectedBot: BotService?,
-    isLoadingStatus: Boolean,
-    botStatus: BotStatus?,
-    statusError: String?,
-    onClearStatusError: () -> Unit,
     onBotTapped: (BotService) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -194,35 +212,6 @@ private fun CreateLanding(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
-        }
-
-        if (isLoadingStatus) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Getting device status...",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onBackground,
-            )
-        }
-
-        botStatus?.let { status ->
-            Spacer(modifier = Modifier.height(10.dp))
-            StatusCard(
-                selectedBot = selectedBot,
-                status = status,
-            )
-        }
-
-        if (statusError != null) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = statusError,
-                style = MaterialTheme.typography.bodySmall,
-                color = colors.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onClearStatusError),
-            )
         }
 
         if (discoveryError != null) {
@@ -312,38 +301,155 @@ private fun BotCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun StatusCard(
+private fun BotDetailScreen(
     selectedBot: BotService?,
-    status: BotStatus,
+    isLoadingStatus: Boolean,
+    botStatus: BotStatus?,
+    statusError: String?,
+    onVolumeChange: (Int) -> Unit,
+    onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = colors.primary,
-            contentColor = colors.onPrimary,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+    val botTitle = selectedBot?.serviceName ?: botStatus?.deviceName ?: "Device"
+
+    BackHandler(onBack = onBack)
+
+    Scaffold(
+        containerColor = colors.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = botTitle,
+                        color = colors.onPrimary,
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Text(
+                            text = "<",
+                            color = colors.onPrimary,
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = colors.primary,
+                    titleContentColor = colors.onPrimary,
+                ),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 24.dp, vertical = 20.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            when {
+                isLoadingStatus -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = colors.primary,
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Getting device status...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.onBackground,
+                        )
+                    }
+                }
+
+                botStatus != null -> {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = colors.primary,
+                            contentColor = colors.onPrimary,
+                        ),
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            DetailRow(label = "Bot Name", value = botStatus.deviceName)
+                            Spacer(modifier = Modifier.height(14.dp))
+                            DetailRow(label = "Connected Wi-Fi", value = botStatus.wifiSsid)
+                            Spacer(modifier = Modifier.height(18.dp))
+                            VolumeControl(
+                                volume = botStatus.volume.coerceIn(0, 100),
+                                onVolumeChange = onVolumeChange,
+                            )
+                        }
+                    }
+                }
+
+                statusError != null -> {
+                    Text(
+                        text = statusError,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = colors.primary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeControl(
+    volume: Int,
+    onVolumeChange: (Int) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = "Device Status",
-                style = MaterialTheme.typography.titleMedium,
+                text = "Volume",
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                text = "$volume",
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
             )
-            selectedBot?.let {
-                val mdnsHost = it.hostName?.removeSuffix(".") ?: it.host
-                Text(
-                    text = "${it.serviceName} ($mdnsHost)",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text("device_name: ${status.deviceName}", style = MaterialTheme.typography.bodyMedium)
-            Text("wifi_ssid: ${status.wifiSsid}", style = MaterialTheme.typography.bodyMedium)
-            Text("volume: ${status.volume}", style = MaterialTheme.typography.bodyMedium)
-            Text("firmware: ${status.firmware}", style = MaterialTheme.typography.bodyMedium)
         }
+        Slider(
+            value = volume.toFloat(),
+            onValueChange = { onVolumeChange(it.roundToInt()) },
+            valueRange = 0f..100f,
+            colors = SliderDefaults.colors(
+                thumbColor = colors.onPrimary,
+                activeTrackColor = colors.onPrimary,
+                inactiveTrackColor = colors.onPrimary.copy(alpha = 0.3f),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun DetailRow(
+    label: String,
+    value: String,
+) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 

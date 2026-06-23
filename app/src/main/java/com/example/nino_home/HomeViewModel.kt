@@ -10,6 +10,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,6 +49,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val PRIMARY_BOT_SERVICE = "_nino._tcp."
         private val DISCOVERY_TYPES = listOf(PRIMARY_BOT_SERVICE)
+        private const val VOLUME_DEBOUNCE_MS = 60L
     }
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -54,6 +57,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val nsdManager = application.getSystemService(NsdManager::class.java)
     private val discoveryListeners = mutableMapOf<String, NsdManager.DiscoveryListener>()
+    private var volumeJob: Job? = null
 
     fun startBotDiscovery() {
         if (discoveryListeners.isNotEmpty()) return
@@ -145,6 +149,36 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearStatusError() {
         _uiState.update { it.copy(statusError = null) }
+    }
+
+    fun clearBotSelection() {
+        volumeJob?.cancel()
+        volumeJob = null
+        _uiState.update {
+            it.copy(
+                selectedBot = null,
+                isLoadingStatus = false,
+                botStatus = null,
+                statusError = null,
+            )
+        }
+    }
+
+    fun setVolume(bot: BotService, volume: Int) {
+        val clamped = volume.coerceIn(0, 100)
+        _uiState.update { state ->
+            state.copy(botStatus = state.botStatus?.copy(volume = clamped))
+        }
+        volumeJob?.cancel()
+        volumeJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(VOLUME_DEBOUNCE_MS)
+            runCatching { postVolume(bot, clamped) }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(statusError = err.message ?: "Failed to set volume")
+                    }
+                }
+        }
     }
 
     fun fetchBotStatus(bot: BotService) {
@@ -241,6 +275,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         stopBotDiscovery()
         super.onCleared()
+    }
+
+    private fun postVolume(bot: BotService, volume: Int) {
+        val url = URL("http://${bot.host}:${bot.port}/volume")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3000
+            readTimeout = 3000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            val body = JSONObject().put("volume", volume).toString()
+            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("Volume request failed ($code)")
+            }
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun requestStatus(bot: BotService): BotStatus {
