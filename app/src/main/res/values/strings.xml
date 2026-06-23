@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Nino-Home</string>
+    <string name="provision_title">Wi‑Fi setup</string>
+    <string name="provision_hint"></string>
+    <string name="scan">Scan for device</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="devices_found">Devices</string>
+    <string name="wifi_ssid">Home Wi‑Fi SSID</string>
+    <string name="wifi_password">Password (empty for open network)</string>
+    <string name="provision_wifi">Send to device</string>
+    <string name="provisioning">Provisioning…</string>
+    <string name="status_format">Device status: state=%1$d connected=%2$b ip=%3$s</string>
+    <string name="success_title">Robot is on your Wi‑Fi</string>
+    <string name="robot_url">http://%1$s/</string>
+    <string name="same_wifi_hint">Connect this phone to the same network, then open the URL above.</string>
+    <string name="log">Log</string>
+    <string name="connected_label">Connected</string>
+</resources>
