@@ -27,6 +27,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -84,10 +85,14 @@ fun HomeScreen() {
         BotDetailScreen(
             selectedBot = homeUiState.selectedBot,
             isLoadingStatus = homeUiState.isLoadingStatus,
+            isUpdatingName = homeUiState.isUpdatingName,
             botStatus = homeUiState.botStatus,
             statusError = homeUiState.statusError,
             onVolumeChange = { volume ->
                 homeUiState.selectedBot?.let { homeViewModel.setVolume(it, volume) }
+            },
+            onRenameRequested = { newName ->
+                homeUiState.selectedBot?.let { homeViewModel.renameBot(it, newName) }
             },
             onBack = {
                 showBotDetail = false
@@ -306,13 +311,19 @@ private fun BotCard(
 private fun BotDetailScreen(
     selectedBot: BotService?,
     isLoadingStatus: Boolean,
+    isUpdatingName: Boolean,
     botStatus: BotStatus?,
     statusError: String?,
     onVolumeChange: (Int) -> Unit,
+    onRenameRequested: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val botTitle = selectedBot?.serviceName ?: botStatus?.deviceName ?: "Device"
+    var isEditingName by remember(botStatus?.deviceName, selectedBot?.serviceName) { mutableStateOf(false) }
+    var pendingName by remember(botStatus?.deviceName, selectedBot?.serviceName) {
+        mutableStateOf(botStatus?.deviceName ?: selectedBot?.serviceName.orEmpty())
+    }
 
     BackHandler(onBack = onBack)
 
@@ -375,7 +386,62 @@ private fun BotDetailScreen(
                         ),
                     ) {
                         Column(modifier = Modifier.padding(20.dp)) {
-                            DetailRow(label = "Bot Name", value = botStatus.deviceName)
+                            if (isEditingName) {
+                                Column {
+                                    Text(
+                                        text = "Bot Name",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    OutlinedTextField(
+                                        value = pendingName,
+                                        onValueChange = { pendingName = it },
+                                        singleLine = true,
+                                        enabled = !isUpdatingName,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        trailingIcon = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(
+                                                    enabled = !isUpdatingName,
+                                                    onClick = {
+                                                        isEditingName = false
+                                                        onRenameRequested(pendingName)
+                                                    },
+                                                ) {
+                                                    Text("✓")
+                                                }
+                                                IconButton(
+                                                    enabled = !isUpdatingName,
+                                                    onClick = {
+                                                        isEditingName = false
+                                                        pendingName = botStatus.deviceName
+                                                    },
+                                                ) {
+                                                    Text("✕")
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        DetailRow(label = "Bot Name", value = botStatus.deviceName)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            pendingName = botStatus.deviceName
+                                            isEditingName = true
+                                        },
+                                    ) {
+                                        Text("✎")
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(14.dp))
                             DetailRow(label = "Connected Wi-Fi", value = botStatus.wifiSsid)
                             Spacer(modifier = Modifier.height(18.dp))

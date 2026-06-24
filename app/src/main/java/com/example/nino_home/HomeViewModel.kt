@@ -41,6 +41,7 @@ data class HomeUiState(
     val discoveryError: String? = null,
     val selectedBot: BotService? = null,
     val isLoadingStatus: Boolean = false,
+    val isUpdatingName: Boolean = false,
     val botStatus: BotStatus? = null,
     val statusError: String? = null,
 )
@@ -158,6 +159,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 selectedBot = null,
                 isLoadingStatus = false,
+                isUpdatingName = false,
                 botStatus = null,
                 statusError = null,
             )
@@ -186,6 +188,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 selectedBot = bot,
                 isLoadingStatus = true,
+                isUpdatingName = false,
                 botStatus = null,
                 statusError = null,
             )
@@ -209,6 +212,36 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                             isLoadingStatus = false,
                             botStatus = null,
                             statusError = err.message ?: "Failed to get device status",
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    fun renameBot(bot: BotService, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) {
+            _uiState.update { it.copy(statusError = "Device name cannot be empty") }
+            return
+        }
+
+        _uiState.update { it.copy(isUpdatingName = true, statusError = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { postDeviceName(bot, trimmed) }
+            _uiState.update { state ->
+                result.fold(
+                    onSuccess = {
+                        state.copy(
+                            isUpdatingName = false,
+                            botStatus = state.botStatus?.copy(deviceName = trimmed),
+                            statusError = null,
+                        )
+                    },
+                    onFailure = { err ->
+                        state.copy(
+                            isUpdatingName = false,
+                            statusError = err.message ?: "Failed to rename device",
                         )
                     },
                 )
@@ -292,6 +325,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val code = conn.responseCode
             if (code !in 200..299) {
                 throw IOException("Volume request failed ($code)")
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun postDeviceName(bot: BotService, name: String) {
+        val url = URL("http://${bot.host}:${bot.port}/device/name")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3000
+            readTimeout = 3000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            val body = JSONObject().put("device_name", name).toString()
+            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("Rename request failed ($code)")
             }
         } finally {
             conn.disconnect()
