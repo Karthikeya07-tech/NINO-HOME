@@ -2,6 +2,7 @@ package com.example.nino_home.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,8 +35,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -49,7 +49,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -733,6 +738,12 @@ private fun VolumeControl(
     onVolumeChange: (Int) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val waveCount = when {
+        volume <= 0 -> 0
+        volume < 40 -> 1
+        volume < 70 -> 2
+        else -> 3
+    }
     Column {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -749,16 +760,110 @@ private fun VolumeControl(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Slider(
-            value = volume.toFloat(),
-            onValueChange = { onVolumeChange(it.roundToInt()) },
-            valueRange = 0f..100f,
-            colors = SliderDefaults.colors(
-                thumbColor = colors.primary,
-                activeTrackColor = colors.primary,
-                inactiveTrackColor = colors.primary.copy(alpha = 0.3f),
-            ),
-        )
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SpeakerIcon(
+                waveCount = waveCount,
+                tint = Color.Black,
+                modifier = Modifier
+                    .size(width = 40.dp, height = 28.dp)
+                    .clickable { onVolumeChange(0) },
+            )
+            Spacer(modifier = Modifier.width(16.dp))
+            WedgeVolumeBar(
+                volume = volume,
+                fillColor = colors.primary,
+                trackColor = Color(0xFFE2E2E2),
+                onVolumeChange = onVolumeChange,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeakerIcon(
+    waveCount: Int,
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val s = size.height / 24f
+        val cone = Path().apply {
+            moveTo(3f * s, 9f * s)
+            lineTo(3f * s, 15f * s)
+            lineTo(7f * s, 15f * s)
+            lineTo(12f * s, 20f * s)
+            lineTo(12f * s, 4f * s)
+            lineTo(7f * s, 9f * s)
+            close()
+        }
+        drawPath(cone, tint)
+
+        val centerX = 12f * s
+        val centerY = 12f * s
+        val stroke = Stroke(width = 1.8f * s, cap = StrokeCap.Round)
+        for (i in 0 until waveCount) {
+            val radius = (3.5f + i * 3.5f) * s
+            drawArc(
+                color = tint,
+                startAngle = -55f,
+                sweepAngle = 110f,
+                useCenter = false,
+                topLeft = Offset(centerX - radius, centerY - radius),
+                size = Size(radius * 2, radius * 2),
+                style = stroke,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WedgeVolumeBar(
+    volume: Int,
+    fillColor: Color,
+    trackColor: Color,
+    onVolumeChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val frac = (volume / 100f).coerceIn(0f, 1f)
+    Canvas(
+        modifier = modifier
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    val f = (offset.x / size.width).coerceIn(0f, 1f)
+                    onVolumeChange((f * 100).roundToInt())
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                    onVolumeChange((f * 100).roundToInt())
+                }
+            },
+    ) {
+        val w = size.width
+        val h = size.height
+        val track = Path().apply {
+            moveTo(0f, h)
+            lineTo(w, h)
+            lineTo(w, 0f)
+            close()
+        }
+        drawPath(track, trackColor)
+
+        val fillX = w * frac
+        if (fillX > 0f) {
+            val fill = Path().apply {
+                moveTo(0f, h)
+                lineTo(fillX, h)
+                lineTo(fillX, h - h * frac)
+                close()
+            }
+            drawPath(fill, fillColor)
+        }
     }
 }
 
