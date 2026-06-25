@@ -4,11 +4,13 @@ The ESP32-P4 advertises a BLE GATT service for Wi‑Fi setup. Credentials are sa
 
 ## BLE discovery
 
-| Field | Value |
-|-------|--------|
-| Advertised name | `PROV_NINO` |
-| Service UUID | `4facb001-5a2e-4b7c-9e1f-a8d3e6f20401` |
-| Soft AP (optional) | `ESP32_P4_CAM` / `12345678` |
+
+| Field              | Value                                  |
+| ------------------ | -------------------------------------- |
+| Advertised name    | `PROV_NINO`                            |
+| Service UUID       | `4facb001-5a2e-4b7c-9e1f-a8d3e6f20401` |
+| Soft AP (optional) | `ESP32_P4_CAM` / `12345678`            |
+
 
 Scan for **PROV_NINO** or filter by the service UUID above.
 
@@ -16,12 +18,14 @@ Scan for **PROV_NINO** or filter by the service UUID above.
 
 All characteristics belong to service `4facb001-5a2e-4b7c-9e1f-a8d3e6f20401`.
 
-| Characteristic UUID | Properties | Max length | Description |
-|---------------------|------------|------------|-------------|
-| `...0201` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20402` | Write | 32 | Home Wi‑Fi SSID (UTF-8) |
-| `...0301` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20403` | Write | 64 | Home Wi‑Fi password (UTF-8, may be empty) |
-| `...0401` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20404` | Write | 1 | Command: `0x01` = apply and connect |
-| `...0501` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20405` | Read, Notify | 96 | JSON status (see below) |
+
+| Characteristic UUID                              | Properties   | Max length | Description                               |
+| ------------------------------------------------ | ------------ | ---------- | ----------------------------------------- |
+| `...0201` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20402` | Write        | 32         | Home Wi‑Fi SSID (UTF-8)                   |
+| `...0301` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20403` | Write        | 64         | Home Wi‑Fi password (UTF-8, may be empty) |
+| `...0401` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20404` | Write        | 1          | Command: `0x01` = apply and connect       |
+| `...0501` `4facb001-5a2e-4b7c-9e1f-a8d3e6f20405` | Read, Notify | 96         | JSON status (see below)                   |
+
 
 Full UUIDs:
 
@@ -39,9 +43,9 @@ Full UUIDs:
 5. Write password to `...0301` (zero-length write for open networks).
 6. Write `0x01` to command characteristic `...0401`.
 7. Wait for status notify/read:
-   - `state` **1** = connecting
-   - `state` **2** = connected (`connected` true, `ip` set)
-   - `state` **3** = failed
+  - `state` **1** = connecting
+  - `state` **2** = connected (`connected` true, `ip` set)
+  - `state` **3** = failed
 8. Move the phone to the same home Wi‑Fi; the robot is reachable at `http://<ip>/`.
 
 Example status JSON:
@@ -63,11 +67,13 @@ Example status JSON:
 
 Namespace `wifi_cfg`:
 
-| Key | Content |
-|-----|---------|
-| `mode` | `2` = STA after BLE/HTTP provision |
-| `sta_ssid` | Router SSID |
-| `sta_pass` | Router password |
+
+| Key        | Content                            |
+| ---------- | ---------------------------------- |
+| `mode`     | `2` = STA after BLE/HTTP provision |
+| `sta_ssid` | Router SSID                        |
+| `sta_pass` | Router password                    |
+
 
 On reboot the firmware loads these keys and calls `esp_wifi_connect()` automatically.
 
