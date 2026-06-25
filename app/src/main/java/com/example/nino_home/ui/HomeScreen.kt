@@ -3,6 +3,7 @@ package com.example.nino_home.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -69,6 +72,7 @@ fun HomeScreen() {
     val colors = MaterialTheme.colorScheme
     var selectedTab by remember { mutableStateOf(HomeTab.Create) }
     var showBotDetail by remember { mutableStateOf(false) }
+    var showAdvancedOptions by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -85,6 +89,18 @@ fun HomeScreen() {
     }
 
     if (showBotDetail) {
+        if (showAdvancedOptions) {
+            AdvancedOptionsScreen(
+                selectedBot = homeUiState.selectedBot,
+                isUpdatingName = homeUiState.isUpdatingName,
+                botStatus = homeUiState.botStatus,
+                onRenameRequested = { newName ->
+                    homeUiState.selectedBot?.let { homeViewModel.renameBot(it, newName) }
+                },
+                onBack = { showAdvancedOptions = false },
+            )
+            return
+        }
         BotDetailScreen(
             selectedBot = homeUiState.selectedBot,
             isLoadingStatus = homeUiState.isLoadingStatus,
@@ -97,8 +113,10 @@ fun HomeScreen() {
             onRenameRequested = { newName ->
                 homeUiState.selectedBot?.let { homeViewModel.renameBot(it, newName) }
             },
+            onOpenAdvanced = { showAdvancedOptions = true },
             onBack = {
                 showBotDetail = false
+                showAdvancedOptions = false
                 homeViewModel.clearBotSelection()
             },
         )
@@ -234,30 +252,32 @@ private fun CreateLanding(
             )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(
-            onClick = onAddNewDevice,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = colors.primary,
-                contentColor = colors.onPrimary,
-            ),
-            contentPadding = PaddingValues(vertical = 14.dp),
-        ) {
+        if (discoveredBots.isEmpty()) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onAddNewDevice,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.primary,
+                    contentColor = colors.onPrimary,
+                ),
+                contentPadding = PaddingValues(vertical = 14.dp),
+            ) {
+                Text(
+                    text = "Add New Device",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "Add New Device",
-                style = MaterialTheme.typography.titleMedium,
+                text = "Ensure your Device is charged\nor\nswitched on",
+                style = MaterialTheme.typography.titleLarge,
+                color = colors.onBackground,
+                textAlign = TextAlign.Center,
             )
+            Spacer(modifier = Modifier.height(20.dp))
         }
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Ensure your Device is charged\nor\nswitched on",
-            style = MaterialTheme.typography.titleLarge,
-            color = colors.onBackground,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -319,6 +339,7 @@ private fun BotDetailScreen(
     statusError: String?,
     onVolumeChange: (Int) -> Unit,
     onRenameRequested: (String) -> Unit,
+    onOpenAdvanced: () -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -440,7 +461,15 @@ private fun BotDetailScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onLongPress = { onOpenAdvanced() },
+                                                )
+                                            },
+                                    ) {
                                         DetailRow(label = "Device Name", value = botStatus.deviceName)
                                     }
                                     IconButton(
@@ -473,6 +502,228 @@ private fun BotDetailScreen(
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdvancedOptionsScreen(
+    selectedBot: BotService?,
+    isUpdatingName: Boolean,
+    botStatus: BotStatus?,
+    onRenameRequested: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val deviceName = botStatus?.deviceName ?: selectedBot?.serviceName ?: "Device"
+    val firmware = botStatus?.firmware ?: "Unknown"
+    val ipAddress = selectedBot?.host ?: "Unknown"
+
+    var isEditingName by remember(botStatus?.deviceName) { mutableStateOf(false) }
+    var pendingName by remember(botStatus?.deviceName) { mutableStateOf(deviceName) }
+    var touchSensorOn by remember { mutableStateOf(true) }
+
+    BackHandler(onBack = onBack)
+
+    Scaffold(
+        containerColor = colors.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = "Advanced Options",
+                        color = colors.onPrimary,
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Text(
+                            text = "←",
+                            color = colors.onPrimary,
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = colors.primary,
+                    titleContentColor = colors.onPrimary,
+                ),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 24.dp, vertical = 20.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            Text(
+                text = "Device Name :",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            if (isEditingName) {
+                OutlinedTextField(
+                    value = pendingName,
+                    onValueChange = { pendingName = it },
+                    singleLine = true,
+                    enabled = !isUpdatingName,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        cursorColor = Color.Black,
+                        focusedTextColor = Color.Black,
+                        unfocusedTextColor = Color.Black,
+                        focusedBorderColor = Color.Black,
+                        unfocusedBorderColor = Color.Black,
+                    ),
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                enabled = !isUpdatingName,
+                                onClick = {
+                                    isEditingName = false
+                                    onRenameRequested(pendingName)
+                                },
+                            ) {
+                                Text("✓")
+                            }
+                            IconButton(
+                                enabled = !isUpdatingName,
+                                onClick = {
+                                    isEditingName = false
+                                    pendingName = deviceName
+                                },
+                            ) {
+                                Text("✕")
+                            }
+                        }
+                    },
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = colors.onBackground.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(6.dp),
+                        )
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = deviceName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.onBackground,
+                    )
+                    IconButton(
+                        onClick = {
+                            pendingName = deviceName
+                            isEditingName = true
+                        },
+                        modifier = Modifier.size(24.dp),
+                    ) {
+                        Text("✎", color = colors.onBackground)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "IP Address : $ipAddress",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Firmware Version : $firmware",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Touch Sensor",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onBackground,
+                )
+                OnOffToggle(
+                    isOn = touchSensorOn,
+                    onToggle = { touchSensorOn = it },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnOffToggle(
+    isOn: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .background(
+                color = Color.Transparent,
+                shape = RoundedCornerShape(6.dp),
+            )
+            .border(
+                border = BorderStroke(1.dp, colors.primary),
+                shape = RoundedCornerShape(6.dp),
+            ),
+    ) {
+        ToggleSegment(
+            text = "OFF",
+            selected = !isOn,
+            onClick = { onToggle(false) },
+        )
+        ToggleSegment(
+            text = "ON",
+            selected = isOn,
+            onClick = { onToggle(true) },
+        )
+    }
+}
+
+@Composable
+private fun ToggleSegment(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .background(if (selected) colors.primary else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (selected) colors.onPrimary else colors.primary,
+        )
     }
 }
 
