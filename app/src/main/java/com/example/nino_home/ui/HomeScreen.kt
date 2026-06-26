@@ -47,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -56,14 +57,22 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.view.View
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
 import kotlin.math.roundToInt
+
+private const val CAMERA_STREAM_PATH = "/stream"
 
 private enum class HomeTab(val title: String) {
     Music("My Music"),
@@ -78,6 +87,7 @@ fun HomeScreen() {
     var selectedTab by remember { mutableStateOf(HomeTab.Create) }
     var showBotDetail by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
+    var showDeviceCamera by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -94,6 +104,13 @@ fun HomeScreen() {
     }
 
     if (showBotDetail) {
+        if (showDeviceCamera) {
+            DeviceCameraScreen(
+                selectedBot = homeUiState.selectedBot,
+                onBack = { showDeviceCamera = false },
+            )
+            return
+        }
         if (showAdvancedOptions) {
             AdvancedOptionsScreen(
                 selectedBot = homeUiState.selectedBot,
@@ -119,9 +136,11 @@ fun HomeScreen() {
                 homeUiState.selectedBot?.let { homeViewModel.renameBot(it, newName) }
             },
             onOpenAdvanced = { showAdvancedOptions = true },
+            onOpenCamera = { showDeviceCamera = true },
             onBack = {
                 showBotDetail = false
                 showAdvancedOptions = false
+                showDeviceCamera = false
                 homeViewModel.clearBotSelection()
             },
         )
@@ -194,16 +213,18 @@ private fun CreateLanding(
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            text = "Please Setup your Device",
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            fontWeight = FontWeight.SemiBold,
-            color = colors.onBackground,
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-        Spacer(modifier = Modifier.height(22.dp))
+        if (discoveredBots.isEmpty()) {
+            Text(
+                text = "Please Setup your Device",
+                style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(22.dp))
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -224,7 +245,13 @@ private fun CreateLanding(
                 ),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
             ) {
-                Text(if (isDiscoveringBots) "Scanning..." else "Refresh")
+                Text(
+                    when {
+                        discoveredBots.isNotEmpty() -> "Refresh"
+                        isDiscoveringBots -> "Scanning..."
+                        else -> "Refresh"
+                    },
+                )
             }
         }
 
@@ -292,9 +319,6 @@ private fun BotCard(
     onTap: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val localName = bot.hostName?.removeSuffix(".")
-    val deviceTag = bot.txt["device"]
-    val mdnsHost = localName ?: bot.host
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -310,26 +334,6 @@ private fun BotCard(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            Text(
-                text = bot.serviceType,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (!localName.isNullOrBlank()) {
-                Text(
-                    text = "$localName",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Text(
-                text = "http://${bot.host}:${bot.port}/status",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (!deviceTag.isNullOrBlank()) {
-                Text(
-                    text = "device=$deviceTag",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
         }
     }
 }
@@ -345,6 +349,7 @@ private fun BotDetailScreen(
     onVolumeChange: (Int) -> Unit,
     onRenameRequested: (String) -> Unit,
     onOpenAdvanced: () -> Unit,
+    onOpenCamera: () -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -494,6 +499,17 @@ private fun BotDetailScreen(
                                 volume = botStatus.volume.coerceIn(0, 100),
                                 onVolumeChange = onVolumeChange,
                             )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = onOpenCamera,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.primary,
+                                    contentColor = colors.onPrimary,
+                                ),
+                            ) {
+                                Text("Device Camera")
+                            }
                         }
                     }
                 }
@@ -512,6 +528,164 @@ private fun BotDetailScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun DeviceCameraScreen(
+    selectedBot: BotService?,
+    onBack: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val streamUrl = selectedBot?.let { "http://${it.host}:${it.port}$CAMERA_STREAM_PATH" }
+    var isFullScreen by remember { mutableStateOf(false) }
+
+    BackHandler {
+        if (isFullScreen) {
+            isFullScreen = false
+        } else {
+            onBack()
+        }
+    }
+
+    Scaffold(
+        containerColor = if (isFullScreen) Color.Black else colors.background,
+        topBar = {
+            if (!isFullScreen) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = "Device Camera",
+                            color = colors.onPrimary,
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Text(
+                                text = "<",
+                                color = colors.onPrimary,
+                                style = MaterialTheme.typography.titleLarge,
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = colors.primary,
+                        titleContentColor = colors.onPrimary,
+                    ),
+                )
+            }
+        },
+    ) { padding ->
+        if (streamUrl == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+            ) {
+                Text(
+                    text = "Camera is unavailable. Select a bot first.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = colors.primary,
+                )
+            }
+            return@Scaffold
+        }
+
+        val webView = remember(streamUrl) {
+            WebView(context).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.builtInZoomControls = false
+                settings.displayZoomControls = false
+                settings.setSupportZoom(false)
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                isVerticalScrollBarEnabled = false
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                webViewClient = WebViewClient()
+                loadUrl(streamUrl)
+            }
+        }
+
+        DisposableEffect(webView) {
+            onDispose {
+                webView.stopLoading()
+                webView.loadUrl("about:blank")
+                webView.destroy()
+            }
+        }
+
+        if (isFullScreen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .background(Color.Black),
+            ) {
+                CameraStreamView(
+                    webView = webView,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+            ) {
+                Text(
+                    text = "Live stream",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onBackground,
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                    border = BorderStroke(1.dp, Color.Black),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White,
+                    ),
+                ) {
+                    CameraStreamView(
+                        webView = webView,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { isFullScreen = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.primary,
+                        contentColor = colors.onPrimary,
+                    ),
+                ) {
+                    Text("Full Screen")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraStreamView(
+    webView: WebView,
+    modifier: Modifier = Modifier,
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { webView },
+        update = {},
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun AdvancedOptionsScreen(
     selectedBot: BotService?,
     isUpdatingName: Boolean,
@@ -523,6 +697,10 @@ private fun AdvancedOptionsScreen(
     val deviceName = botStatus?.deviceName ?: selectedBot?.serviceName ?: "Device"
     val firmware = botStatus?.firmware ?: "Unknown"
     val ipAddress = selectedBot?.host ?: "Unknown"
+    val serviceType = selectedBot?.serviceType ?: "Unknown"
+    val mdnsHost = selectedBot?.hostName?.removeSuffix(".") ?: "Unknown"
+    val statusUrl = selectedBot?.let { "http://${it.host}:${it.port}/status" } ?: "Unknown"
+    val deviceTag = selectedBot?.txt?.get("device") ?: "Unknown"
 
     var isEditingName by remember(botStatus?.deviceName) { mutableStateOf(false) }
     var pendingName by remember(botStatus?.deviceName) { mutableStateOf(deviceName) }
@@ -641,6 +819,46 @@ private fun AdvancedOptionsScreen(
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = "IP Address : $ipAddress",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Service Type : $serviceType",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "mDNS Host : $mdnsHost",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Status URL : $statusUrl",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onBackground,
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Device Tag : $deviceTag",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = colors.onBackground,
@@ -919,6 +1137,7 @@ private fun BottomMenu(
     ) {
         BottomMenuItem(
             label = HomeTab.Music.title,
+            icon = "♪",
             selected = selectedTab == HomeTab.Music,
             onClick = { onTabSelected(HomeTab.Music) },
             modifier = Modifier.weight(1f),
@@ -931,6 +1150,7 @@ private fun BottomMenu(
         )
         BottomMenuItem(
             label = HomeTab.Create.title,
+            icon = "▶",
             selected = selectedTab == HomeTab.Create,
             onClick = { onTabSelected(HomeTab.Create) },
             modifier = Modifier.weight(1f),
@@ -943,6 +1163,7 @@ private fun BottomMenu(
         )
         BottomMenuItem(
             label = HomeTab.Configure.title,
+            icon = "⚙",
             selected = selectedTab == HomeTab.Configure,
             onClick = { onTabSelected(HomeTab.Configure) },
             modifier = Modifier.weight(1f),
@@ -953,21 +1174,32 @@ private fun BottomMenu(
 @Composable
 private fun BottomMenuItem(
     label: String,
+    icon: String,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val colors = MaterialTheme.colorScheme
+    val iconAndTextColor = Color.White
     Box(
         modifier = modifier
             .fillMaxSize()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleMedium,
-            color = if (selected) colors.onSecondary else colors.onSecondary.copy(alpha = 0.8f),
-        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = icon,
+                style = MaterialTheme.typography.titleLarge,
+                color = iconAndTextColor,
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium,
+                color = iconAndTextColor,
+            )
+        }
     }
 }

@@ -2,7 +2,9 @@ package com.example.nino_home
 
 import android.app.Application
 import android.bluetooth.BluetoothDevice
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.nino_home.ble.BleWifiProvisioner
@@ -96,7 +98,18 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
     private val provisioner = BleWifiProvisioner(application, provisionerListener)
 
     init {
-        _uiState.update { it.copy(ssid = readCurrentWifiSsid().orEmpty()) }
+        refreshCurrentWifiSsid(force = true)
+    }
+
+    fun refreshCurrentWifiSsid(force: Boolean) {
+        val wifiSsid = readCurrentWifiSsid() ?: return
+        _uiState.update { state ->
+            if (!force && state.ssid.isNotBlank()) {
+                state
+            } else {
+                state.copy(ssid = wifiSsid)
+            }
+        }
     }
 
     fun updateSsid(value: String) = _uiState.update { it.copy(ssid = value, error = null) }
@@ -169,7 +182,14 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
 
     @Suppress("DEPRECATION")
     private fun readCurrentWifiSsid(): String? {
-        val wifi = getApplication<Application>().getSystemService(WifiManager::class.java) ?: return null
+        val app = getApplication<Application>()
+        val hasLocationPermission = ContextCompat.checkSelfPermission(
+            app,
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocationPermission) return null
+
+        val wifi = app.getSystemService(WifiManager::class.java) ?: return null
         val raw = wifi.connectionInfo?.ssid ?: return null
         return raw.trim('"').takeIf { it.isNotEmpty() && it != "<unknown ssid>" }
     }
