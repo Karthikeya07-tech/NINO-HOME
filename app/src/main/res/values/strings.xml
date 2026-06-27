@@ -1,7 +1,9 @@
 <resources>
     <string name="app_name">Nino-Home</string>
     <string name="provision_title">Wi‑Fi setup</string>
-    <string name="provision_hint"></string>
+    <string name="configure_device_note">Make sure the device is turned on and says: \"Please go to Sirena Nino Home app to connect to a WIFI network.\"</string>
+    <string name="play_configure_audio">Play setup instructions</string>
+    <string name="credentials_sent_message">Credentials sent to the device.</string>
     <string name="scan">Scan for device</string>
     <string name="disconnect">Disconnect</string>
     <string name="devices_found">Devices</string>

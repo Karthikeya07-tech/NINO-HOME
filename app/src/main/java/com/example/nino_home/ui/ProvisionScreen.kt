@@ -1,6 +1,7 @@
 package com.example.nino_home.ui
 
 import android.Manifest
+import android.media.MediaPlayer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -20,6 +21,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -33,6 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,9 +44,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -96,6 +103,24 @@ fun ProvisionScreen(
     val layoutDirection = LocalLayoutDirection.current
     var hasEverConnected by remember { mutableStateOf(false) }
     var isPasswordVisible by remember { mutableStateOf(false) }
+    val configureAudioPlayer = remember {
+        MediaPlayer.create(context, R.raw.go_app)?.apply {
+            setOnCompletionListener { seekTo(0) }
+        }
+    }
+
+    DisposableEffect(configureAudioPlayer) {
+        onDispose { configureAudioPlayer?.release() }
+    }
+
+    fun playConfigureAudio() {
+        val player = configureAudioPlayer ?: return
+        if (player.isPlaying) {
+            player.seekTo(0)
+        } else {
+            player.start()
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.refreshCurrentWifiSsid(force = false)
@@ -163,6 +188,36 @@ fun ProvisionScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = colors.surface,
+                    contentColor = colors.onSurface,
+                ),
+                border = BorderStroke(1.dp, colors.outline.copy(alpha = 0.35f)),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.configure_device_note),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Start,
+                    )
+                    IconButton(onClick = { playConfigureAudio() }) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_speaker),
+                            contentDescription = stringResource(R.string.play_configure_audio),
+                            tint = Color.Black,
+                        )
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = {
@@ -265,6 +320,23 @@ fun ProvisionScreen(
                         stringResource(R.string.provision_wifi)
                     },
                 )
+            }
+
+            if (uiState.credentialsSent) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = colors.primary,
+                        contentColor = colors.onPrimary,
+                    ),
+                ) {
+                    Text(
+                        text = stringResource(R.string.credentials_sent_message),
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
 
             uiState.robotIp?.let { ip ->

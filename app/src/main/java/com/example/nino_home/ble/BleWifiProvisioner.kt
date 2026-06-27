@@ -35,6 +35,7 @@ class BleWifiProvisioner(
         fun onDisconnected()
         fun onStatus(status: WifiProvisionStatus)
         fun onError(message: String)
+        fun onCredentialsSent()
         fun onFinished(success: Boolean, ip: String?)
     }
 
@@ -214,7 +215,11 @@ class BleWifiProvisioner(
 
     private fun completeOperation() {
         operationInFlight.set(false)
+        val credentialsQueued = operationQueue.isEmpty()
         drainQueue()
+        if (credentialsQueued && operationQueue.isEmpty() && !operationInFlight.get()) {
+            mainHandler.post { listener.onCredentialsSent() }
+        }
     }
 
     private fun postStatusFromBytes(value: ByteArray?) {

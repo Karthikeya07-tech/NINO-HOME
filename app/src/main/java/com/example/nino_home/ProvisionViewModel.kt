@@ -27,6 +27,7 @@ data class ProvisionUiState(
     val isProvisioning: Boolean = false,
     val lastStatus: WifiProvisionStatus? = null,
     val robotIp: String? = null,
+    val credentialsSent: Boolean = false,
     val error: String? = null,
 )
 
@@ -83,6 +84,18 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
+        override fun onCredentialsSent() {
+            viewModelScope.launch {
+                _uiState.update {
+                    it.copy(
+                        isProvisioning = false,
+                        credentialsSent = true,
+                    )
+                }
+                appendLog("Credentials sent to the device")
+            }
+        }
+
         override fun onFinished(success: Boolean, ip: String?) {
             viewModelScope.launch {
                 _uiState.update {
@@ -127,6 +140,7 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
                 error = null,
                 robotIp = null,
                 lastStatus = null,
+                credentialsSent = false,
             )
         }
         provisioner.startScan()
@@ -155,6 +169,7 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
                 error = null,
                 robotIp = null,
                 lastStatus = null,
+                credentialsSent = false,
             )
         }
         provisioner.provision(state.ssid, state.password)

@@ -256,7 +256,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
                     if (_uiState.value.discoveryError == null) {
                         _uiState.update {
-                            it.copy(discoveryError = "Could not resolve bot service ($errorCode)")
+                            it.copy(discoveryError = "Could not resolve device service ($errorCode)")
                         }
                     }
                 }

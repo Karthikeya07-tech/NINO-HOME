@@ -88,6 +88,7 @@ fun HomeScreen() {
     var showBotDetail by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
     var showDeviceCamera by remember { mutableStateOf(false) }
+    var showPlayZone by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -104,6 +105,12 @@ fun HomeScreen() {
     }
 
     if (showBotDetail) {
+        if (showPlayZone) {
+            VisualsScreen(
+                onBack = { showPlayZone = false },
+            )
+            return
+        }
         if (showDeviceCamera) {
             DeviceCameraScreen(
                 selectedBot = homeUiState.selectedBot,
@@ -137,10 +144,12 @@ fun HomeScreen() {
             },
             onOpenAdvanced = { showAdvancedOptions = true },
             onOpenCamera = { showDeviceCamera = true },
+            onOpenPlayZone = { showPlayZone = true },
             onBack = {
                 showBotDetail = false
                 showAdvancedOptions = false
                 showDeviceCamera = false
+                showPlayZone = false
                 homeViewModel.clearBotSelection()
             },
         )
@@ -232,7 +241,7 @@ private fun CreateLanding(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Bots on Home Wi-Fi",
+                text = "Devices on Home Wi-Fi",
                 style = MaterialTheme.typography.titleMedium,
                 color = colors.onBackground,
             )
@@ -258,7 +267,7 @@ private fun CreateLanding(
         Spacer(modifier = Modifier.height(10.dp))
         if (discoveredBots.isEmpty()) {
             Text(
-                text = "No bot found yet. Keep bot and phone on same Wi-Fi.",
+                text = "No device found yet. Keep device and phone on same Wi-Fi.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.onBackground,
             )
@@ -350,6 +359,7 @@ private fun BotDetailScreen(
     onRenameRequested: (String) -> Unit,
     onOpenAdvanced: () -> Unit,
     onOpenCamera: () -> Unit,
+    onOpenPlayZone: () -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -500,15 +510,38 @@ private fun BotDetailScreen(
                                 onVolumeChange = onVolumeChange,
                             )
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(
-                                onClick = onOpenCamera,
-                                shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = colors.primary,
-                                    contentColor = colors.onPrimary,
-                                ),
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                Text("Device Camera")
+                                Button(
+                                    onClick = onOpenCamera,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colors.primary,
+                                        contentColor = colors.onPrimary,
+                                    ),
+                                ) {
+                                    Text(
+                                        text = "Device Camera",
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
+                                Button(
+                                    onClick = onOpenPlayZone,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colors.primary,
+                                        contentColor = colors.onPrimary,
+                                    ),
+                                ) {
+                                    Text(
+                                        text = "Play Zone",
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
                             }
                         }
                     }
@@ -519,6 +552,83 @@ private fun BotDetailScreen(
                         text = statusError,
                         style = MaterialTheme.typography.bodyLarge,
                         color = colors.primary,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VisualsScreen(
+    onBack: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val visualOptions = listOf(
+        "Happy",
+        "Excited",
+        "Thinking",
+        "Idea",
+        "Hello",
+        "Wink",
+    )
+
+    BackHandler(onBack = onBack)
+
+    Scaffold(
+        containerColor = colors.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = "Visuals",
+                        color = colors.onPrimary,
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Text(
+                            text = "<",
+                            color = colors.onPrimary,
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = colors.primary,
+                    titleContentColor = colors.onPrimary,
+                ),
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 24.dp, vertical = 20.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            visualOptions.forEach { option ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { },
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                    ),
+                    border = BorderStroke(1.dp, Color.Black),
+                ) {
+                    Text(
+                        text = option,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp, horizontal = 20.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
@@ -581,7 +691,7 @@ private fun DeviceCameraScreen(
                     .padding(horizontal = 24.dp, vertical = 20.dp),
             ) {
                 Text(
-                    text = "Camera is unavailable. Select a bot first.",
+                    text = "Camera is unavailable. Select a device first.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = colors.primary,
                 )
