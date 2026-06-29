@@ -1,5 +1,14 @@
 package com.example.nino_home.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import android.view.MotionEvent
+import android.view.View
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -7,11 +16,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +31,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +44,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -46,8 +61,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -62,11 +77,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import android.view.View
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
@@ -84,11 +98,11 @@ private enum class HomeTab(val title: String) {
 @Composable
 fun HomeScreen() {
     val colors = MaterialTheme.colorScheme
-    var selectedTab by remember { mutableStateOf(HomeTab.Create) }
-    var showBotDetail by remember { mutableStateOf(false) }
-    var showAdvancedOptions by remember { mutableStateOf(false) }
-    var showDeviceCamera by remember { mutableStateOf(false) }
-    var showPlayZone by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableStateOf(HomeTab.Create) }
+    var showBotDetail by rememberSaveable { mutableStateOf(false) }
+    var showAdvancedOptions by rememberSaveable { mutableStateOf(false) }
+    var showDeviceCamera by rememberSaveable { mutableStateOf(false) }
+    var showPlayZone by rememberSaveable { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -645,7 +659,9 @@ private fun DeviceCameraScreen(
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
     val streamUrl = selectedBot?.let { "http://${it.host}:${it.port}$CAMERA_STREAM_PATH" }
-    var isFullScreen by remember { mutableStateOf(false) }
+    var isFullScreen by rememberSaveable { mutableStateOf(false) }
+
+    FullScreenSystemUiEffect(enabled = isFullScreen)
 
     BackHandler {
         if (isFullScreen) {
@@ -712,7 +728,51 @@ private fun DeviceCameraScreen(
                 isVerticalScrollBarEnabled = false
                 isHorizontalScrollBarEnabled = false
                 overScrollMode = View.OVER_SCROLL_NEVER
-                webViewClient = WebViewClient()
+                setBackgroundColor(android.graphics.Color.WHITE)
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        view?.evaluateJavascript(
+                            """
+                            (function() {
+                              const styleId = 'nino-stream-fullscreen-style';
+                              if (!document.getElementById(styleId)) {
+                                const style = document.createElement('style');
+                                style.id = styleId;
+                                style.innerHTML = `
+                                  html, body {
+                                    margin: 0;
+                                    padding: 0;
+                                    width: 100%;
+                                    height: 100%;
+                                    overflow: hidden;
+                                    background: #fff;
+                                    touch-action: none !important;
+                                  }
+                                  body {
+                                    display: flex;
+                                    align-items: center;
+                                    justify-content: center;
+                                  }
+                                  video, img, canvas, iframe {
+                                    width: 100% !important;
+                                    height: 100% !important;
+                                    max-width: 100% !important;
+                                    max-height: 100% !important;
+                                    object-fit: contain !important;
+                                    object-position: center center !important;
+                                    background: #fff !important;
+                                    transform: none !important;
+                                  }
+                                `;
+                                document.head.appendChild(style);
+                              }
+                            })();
+                            """.trimIndent(),
+                            null,
+                        )
+                    }
+                }
                 loadUrl(streamUrl)
             }
         }
@@ -729,13 +789,46 @@ private fun DeviceCameraScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .background(Color.Black),
+                    .background(Color.White),
             ) {
-                CameraStreamView(
-                    webView = webView,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth(0.92f)
+                        .fillMaxHeight(0.8f)
+                        .aspectRatio(
+                            ratio = 16f / 9f,
+                            matchHeightConstraintsFirst = true,
+                        )
+                        .background(
+                            color = Color.White,
+                            shape = RoundedCornerShape(6.dp),
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = Color.Black,
+                            shape = RoundedCornerShape(6.dp),
+                        ),
+                ) {
+                    CameraStreamView(
+                        webView = webView,
+                        modifier = Modifier.fillMaxSize(),
+                        interactionEnabled = false,
+                    )
+                    IconButton(
+                        onClick = { isFullScreen = false },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.FullscreenExit,
+                            contentDescription = "Exit full screen",
+                            tint = Color.Black,
+                        )
+                    }
+                }
             }
         } else {
             Column(
@@ -751,31 +844,35 @@ private fun DeviceCameraScreen(
                     color = colors.onBackground,
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp),
-                    border = BorderStroke(1.dp, Color.Black),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color.White,
-                    ),
-                ) {
-                    CameraStreamView(
-                        webView = webView,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = { isFullScreen = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = colors.primary,
-                        contentColor = colors.onPrimary,
-                    ),
-                ) {
-                    Text("Full Screen")
+                Box {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp),
+                        border = BorderStroke(1.dp, Color.Black),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color.White,
+                        ),
+                    ) {
+                        CameraStreamView(
+                            webView = webView,
+                            modifier = Modifier.fillMaxSize(),
+                            interactionEnabled = true,
+                        )
+                    }
+                    IconButton(
+                        onClick = { isFullScreen = true },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp)
+                            .size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Fullscreen,
+                            contentDescription = "Enter full screen",
+                            tint = Color.Black,
+                        )
+                    }
                 }
             }
         }
@@ -783,10 +880,53 @@ private fun DeviceCameraScreen(
 }
 
 @Composable
+private fun FullScreenSystemUiEffect(enabled: Boolean) {
+    val context = LocalContext.current
+
+    DisposableEffect(enabled, context) {
+        if (!enabled) {
+            return@DisposableEffect onDispose {}
+        }
+
+        val activity = context.findActivity() ?: return@DisposableEffect onDispose {}
+        val window = activity.window
+        val previousOrientation = activity.requestedOrientation
+        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        insetsController.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        insetsController.hide(WindowInsetsCompat.Type.systemBars())
+
+        onDispose {
+            activity.requestedOrientation = previousOrientation
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+@Composable
 private fun CameraStreamView(
     webView: WebView,
     modifier: Modifier = Modifier,
+    interactionEnabled: Boolean = true,
 ) {
+    webView.setOnTouchListener { _, event ->
+        if (interactionEnabled) {
+            false
+        } else {
+            event.actionMasked != MotionEvent.ACTION_OUTSIDE
+        }
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { webView },
