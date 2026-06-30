@@ -31,6 +31,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -73,6 +76,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -86,6 +90,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.nino_home.BotCardInfo
 import com.example.nino_home.BotService
 import com.example.nino_home.R
 import com.example.nino_home.BotStatus
@@ -210,6 +215,7 @@ fun HomeScreen() {
                 contentPadding = padding,
                 onAddNewDevice = { selectedTab = HomeTab.Configure },
                 discoveredBots = homeUiState.discoveredBots,
+                botCardInfo = homeUiState.botCardInfo,
                 isDiscoveringBots = homeUiState.isDiscoveringBots,
                 discoveryError = homeUiState.discoveryError,
                 onRefreshBots = { homeViewModel.refreshBotDiscovery() },
@@ -236,6 +242,7 @@ private fun CreateLanding(
     contentPadding: PaddingValues,
     onAddNewDevice: () -> Unit,
     discoveredBots: List<BotService>,
+    botCardInfo: Map<String, BotCardInfo>,
     isDiscoveringBots: Boolean,
     discoveryError: String?,
     onRefreshBots: () -> Unit,
@@ -260,6 +267,7 @@ private fun CreateLanding(
         } else {
             DeviceScenesList(
                 discoveredBots = discoveredBots,
+                botCardInfo = botCardInfo,
                 discoveryError = discoveryError,
                 onClearError = onClearError,
                 onBotTapped = onBotTapped,
@@ -359,6 +367,7 @@ private fun SetupEmptyState(
 @Composable
 private fun DeviceScenesList(
     discoveredBots: List<BotService>,
+    botCardInfo: Map<String, BotCardInfo>,
     discoveryError: String?,
     onClearError: () -> Unit,
     onBotTapped: (BotService) -> Unit,
@@ -384,8 +393,10 @@ private fun DeviceScenesList(
         }
 
         discoveredBots.forEach { bot ->
+            val cardKey = "${bot.host}:${bot.port}"
             DeviceSceneCard(
                 bot = bot,
+                cardInfo = botCardInfo[cardKey],
                 onTap = { onBotTapped(bot) },
                 onVolumeChange = { volume -> onVolumeChange(bot, volume) },
             )
@@ -397,12 +408,19 @@ private fun DeviceScenesList(
 @Composable
 private fun DeviceSceneCard(
     bot: BotService,
+    cardInfo: BotCardInfo?,
     onTap: () -> Unit,
     onVolumeChange: (Int) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val deviceLabel = bot.txt["device"] ?: bot.serviceName
-    var volume by remember(bot.host) { mutableStateOf(50) }
+    val deviceLabel = cardInfo?.deviceName ?: bot.serviceName
+    var volume by remember(bot.host, cardInfo?.volume) {
+        mutableStateOf(cardInfo?.volume ?: 50)
+    }
+
+    LaunchedEffect(cardInfo?.volume) {
+        cardInfo?.volume?.let { volume = it }
+    }
 
     Card(
         modifier = Modifier
@@ -467,11 +485,20 @@ private fun DeviceSceneCard(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    SceneControlButton(label = "⏮")
+                    SceneControlButton(
+                        icon = Icons.Filled.SkipPrevious,
+                        contentDescription = "Previous",
+                    )
                     Spacer(modifier = Modifier.width(16.dp))
-                    SceneControlButton(label = "⏸")
+                    SceneControlButton(
+                        icon = Icons.Filled.Pause,
+                        contentDescription = "Pause",
+                    )
                     Spacer(modifier = Modifier.width(16.dp))
-                    SceneControlButton(label = "⏭")
+                    SceneControlButton(
+                        icon = Icons.Filled.SkipNext,
+                        contentDescription = "Next",
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
@@ -507,18 +534,22 @@ private fun DeviceSceneCard(
 }
 
 @Composable
-private fun SceneControlButton(label: String) {
+private fun SceneControlButton(
+    icon: ImageVector,
+    contentDescription: String,
+) {
     Box(
         modifier = Modifier
             .size(32.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = 0.15f)),
+            .background(Color(0xFF3A3A3A)),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = Color.White,
+            modifier = Modifier.size(18.dp),
         )
     }
 }

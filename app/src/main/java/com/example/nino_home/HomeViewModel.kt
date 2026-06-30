@@ -35,8 +35,14 @@ data class BotStatus(
     val firmware: String,
 )
 
+data class BotCardInfo(
+    val deviceName: String,
+    val volume: Int,
+)
+
 data class HomeUiState(
     val discoveredBots: List<BotService> = emptyList(),
+    val botCardInfo: Map<String, BotCardInfo> = emptyMap(),
     val isDiscoveringBots: Boolean = false,
     val discoveryError: String? = null,
     val selectedBot: BotService? = null,
@@ -51,7 +57,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         private const val PRIMARY_BOT_SERVICE = "_nino._tcp."
         private val DISCOVERY_TYPES = listOf(PRIMARY_BOT_SERVICE)
         private const val VOLUME_DEBOUNCE_MS = 60L
+        private const val DISCOVERY_SCAN_DURATION_MS = 15_000L
     }
+
+    private fun botKey(bot: BotService) = "${bot.host}:${bot.port}"
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -59,21 +68,24 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val nsdManager = application.getSystemService(NsdManager::class.java)
     private val discoveryListeners = mutableMapOf<String, NsdManager.DiscoveryListener>()
     private var volumeJob: Job? = null
+    private var discoveryTimeoutJob: Job? = null
 
     fun refreshBotDiscovery() {
         viewModelScope.launch {
             stopBotDiscovery()
             delay(400)
-            startBotDiscovery()
+            startBotDiscovery(clearResults = true)
         }
     }
 
-    fun startBotDiscovery() {
+    fun startBotDiscovery(clearResults: Boolean = false) {
         if (discoveryListeners.isNotEmpty()) return
 
+        discoveryTimeoutJob?.cancel()
         _uiState.update {
             it.copy(
-                discoveredBots = emptyList(),
+                discoveredBots = if (clearResults) emptyList() else it.discoveredBots,
+                botCardInfo = if (clearResults) emptyMap() else it.botCardInfo,
                 isDiscoveringBots = true,
                 discoveryError = null,
             )
@@ -141,10 +153,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         _uiState.update { it.copy(isDiscoveringBots = discoveryListeners.isNotEmpty()) }
+
+        discoveryTimeoutJob = viewModelScope.launch {
+            delay(DISCOVERY_SCAN_DURATION_MS)
+            stopBotDiscovery()
+        }
     }
 
     fun stopBotDiscovery() {
-        if (discoveryListeners.isEmpty()) return
+        discoveryTimeoutJob?.cancel()
+        discoveryTimeoutJob = null
+        if (discoveryListeners.isEmpty()) {
+            _uiState.update { it.copy(isDiscoveringBots = false) }
+            return
+        }
         val snapshot = discoveryListeners.toMap()
         discoveryListeners.clear()
         snapshot.forEach { (serviceType, listener) ->
@@ -177,8 +199,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setVolume(bot: BotService, volume: Int) {
         val clamped = volume.coerceIn(0, 100)
+        val key = botKey(bot)
         _uiState.update { state ->
-            state.copy(botStatus = state.botStatus?.copy(volume = clamped))
+            val cardInfo = state.botCardInfo[key]
+            state.copy(
+                botStatus = state.botStatus?.copy(volume = clamped),
+                botCardInfo = if (cardInfo != null) {
+                    state.botCardInfo + (key to cardInfo.copy(volume = clamped))
+                } else {
+                    state.botCardInfo
+                },
+            )
         }
         volumeJob?.cancel()
         volumeJob = viewModelScope.launch(Dispatchers.IO) {
@@ -294,6 +325,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                             ) {
                                 state
                             } else {
+                                fetchBotCardInfo(bot)
                                 state.copy(discoveredBots = state.discoveredBots + bot)
                             }
                         }
@@ -358,6 +390,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             }
         } finally {
             conn.disconnect()
+        }
+    }
+
+    private fun fetchBotCardInfo(bot: BotService) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { requestStatus(bot) }
+                .onSuccess { status ->
+                    val volume = if (status.volume in 0..100) status.volume else 50
+                    _uiState.update { state ->
+                        state.copy(
+                            botCardInfo = state.botCardInfo + (botKey(bot) to BotCardInfo(
+                                deviceName = status.deviceName,
+                                volume = volume,
+                            )),
+                        )
+                    }
+                }
         }
     }
 
