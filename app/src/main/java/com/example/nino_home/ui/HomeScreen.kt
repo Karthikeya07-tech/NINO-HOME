@@ -39,7 +39,9 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Button
@@ -114,6 +116,7 @@ fun HomeScreen() {
     var showAdvancedOptions by rememberSaveable { mutableStateOf(false) }
     var showDeviceCamera by rememberSaveable { mutableStateOf(false) }
     var showPlayZone by rememberSaveable { mutableStateOf(false) }
+    var showVisualsScreen by rememberSaveable { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -127,6 +130,13 @@ fun HomeScreen() {
 
     DisposableEffect(Unit) {
         onDispose { homeViewModel.stopBotDiscovery() }
+    }
+
+    if (showVisualsScreen) {
+        VisualsScreen(
+            onBack = { showVisualsScreen = false },
+        )
+        return
     }
 
     if (showBotDetail) {
@@ -227,6 +237,7 @@ fun HomeScreen() {
                 onVolumeChange = { bot, volume ->
                     homeViewModel.setVolume(bot, volume)
                 },
+                onOpenVisuals = { showVisualsScreen = true },
             )
             HomeTab.Configure -> ProvisionScreen(
                 showTopBar = false,
@@ -249,6 +260,7 @@ private fun CreateLanding(
     onClearError: () -> Unit,
     onBotTapped: (BotService) -> Unit,
     onVolumeChange: (BotService, Int) -> Unit,
+    onOpenVisuals: () -> Unit,
 ) {
     PullToRefreshBox(
         isRefreshing = isDiscoveringBots,
@@ -272,6 +284,7 @@ private fun CreateLanding(
                 onClearError = onClearError,
                 onBotTapped = onBotTapped,
                 onVolumeChange = onVolumeChange,
+                onOpenVisuals = onOpenVisuals,
             )
         }
     }
@@ -372,6 +385,7 @@ private fun DeviceScenesList(
     onClearError: () -> Unit,
     onBotTapped: (BotService) -> Unit,
     onVolumeChange: (BotService, Int) -> Unit,
+    onOpenVisuals: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(
@@ -399,6 +413,7 @@ private fun DeviceScenesList(
                 cardInfo = botCardInfo[cardKey],
                 onTap = { onBotTapped(bot) },
                 onVolumeChange = { volume -> onVolumeChange(bot, volume) },
+                onOpenVisuals = onOpenVisuals,
             )
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -411,6 +426,7 @@ private fun DeviceSceneCard(
     cardInfo: BotCardInfo?,
     onTap: () -> Unit,
     onVolumeChange: (Int) -> Unit,
+    onOpenVisuals: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val deviceLabel = cardInfo?.deviceName ?: bot.serviceName
@@ -527,9 +543,32 @@ private fun DeviceSceneCard(
                             .weight(1f)
                             .height(28.dp),
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    VisualsCircleButton(onClick = onOpenVisuals)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun VisualsCircleButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF3A3A3A))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.side_image),
+            contentDescription = "Open visuals",
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop,
+        )
     }
 }
 
