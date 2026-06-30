@@ -34,9 +34,11 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -65,6 +67,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -82,6 +87,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.BotService
+import com.example.nino_home.R
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
 import kotlin.math.roundToInt
@@ -175,8 +181,13 @@ fun HomeScreen() {
         topBar = {
             TopAppBar(
                 title = {
+                    val title = when {
+                        selectedTab == HomeTab.Create && homeUiState.discoveredBots.isNotEmpty() ->
+                            "Home - Scenes"
+                        else -> "Home - ${selectedTab.title}"
+                    }
                     Text(
-                        text = "Home - ${selectedTab.title}",
+                        text = title,
                         color = colors.onPrimary,
                     )
                 },
@@ -201,11 +212,14 @@ fun HomeScreen() {
                 discoveredBots = homeUiState.discoveredBots,
                 isDiscoveringBots = homeUiState.isDiscoveringBots,
                 discoveryError = homeUiState.discoveryError,
-                onRefreshBots = { homeViewModel.startBotDiscovery() },
+                onRefreshBots = { homeViewModel.refreshBotDiscovery() },
                 onClearError = homeViewModel::clearDiscoveryError,
                 onBotTapped = { bot ->
                     homeViewModel.fetchBotStatus(bot)
                     showBotDetail = true
+                },
+                onVolumeChange = { bot, volume ->
+                    homeViewModel.setVolume(bot, volume)
                 },
             )
             HomeTab.Configure -> ProvisionScreen(
@@ -216,6 +230,7 @@ fun HomeScreen() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateLanding(
     contentPadding: PaddingValues,
@@ -226,138 +241,285 @@ private fun CreateLanding(
     onRefreshBots: () -> Unit,
     onClearError: () -> Unit,
     onBotTapped: (BotService) -> Unit,
+    onVolumeChange: (BotService, Int) -> Unit,
+) {
+    PullToRefreshBox(
+        isRefreshing = isDiscoveringBots,
+        onRefresh = onRefreshBots,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(contentPadding),
+    ) {
+        if (discoveredBots.isEmpty()) {
+            SetupEmptyState(
+                isDiscoveringBots = isDiscoveringBots,
+                discoveryError = discoveryError,
+                onAddNewDevice = onAddNewDevice,
+                onClearError = onClearError,
+            )
+        } else {
+            DeviceScenesList(
+                discoveredBots = discoveredBots,
+                discoveryError = discoveryError,
+                onClearError = onClearError,
+                onBotTapped = onBotTapped,
+                onVolumeChange = onVolumeChange,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SetupEmptyState(
+    isDiscoveringBots: Boolean,
+    discoveryError: String?,
+    onAddNewDevice: () -> Unit,
+    onClearError: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(contentPadding)
             .padding(horizontal = 24.dp, vertical = 20.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (discoveredBots.isEmpty()) {
-            Text(
-                text = "Please Setup your Device",
-                style = MaterialTheme.typography.headlineSmall,
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onBackground,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(22.dp))
-        }
+        Text(
+            text = "Please Setup your Device",
+            style = MaterialTheme.typography.headlineSmall,
+            textAlign = TextAlign.Center,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+        Spacer(modifier = Modifier.height(22.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        if (isDiscoveringBots) {
             Text(
-                text = "Devices on Home Wi-Fi",
-                style = MaterialTheme.typography.titleMedium,
-                color = colors.onBackground,
-            )
-            Button(
-                onClick = onRefreshBots,
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.primary,
-                    contentColor = colors.onPrimary,
-                ),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    when {
-                        discoveredBots.isNotEmpty() -> "Refresh"
-                        isDiscoveringBots -> "Scanning..."
-                        else -> "Refresh"
-                    },
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        if (discoveredBots.isEmpty()) {
-            Text(
-                text = "No device found yet. Keep device and phone on same Wi-Fi.",
+                text = "Scanning home network…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.onBackground,
+                textAlign = TextAlign.Center,
             )
-        } else {
-            discoveredBots.forEach { bot ->
-                BotCard(
-                    bot = bot,
-                    onTap = { onBotTapped(bot) },
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
+            Spacer(modifier = Modifier.height(16.dp))
         }
 
         if (discoveryError != null) {
-            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = discoveryError,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClearError),
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        Image(
+            painter = painterResource(R.drawable.no_device),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .height(260.dp)
+                .padding(vertical = 8.dp),
+            contentScale = ContentScale.Fit,
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        Button(
+            onClick = onAddNewDevice,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.primary,
+                contentColor = colors.onPrimary,
+            ),
+            contentPadding = PaddingValues(vertical = 14.dp),
+        ) {
+            Text(
+                text = "Add New Device",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Ensure your Device is charged\nor\nswitched on",
+            style = MaterialTheme.typography.titleLarge,
+            color = colors.onBackground,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun DeviceScenesList(
+    discoveredBots: List<BotService>,
+    discoveryError: String?,
+    onClearError: () -> Unit,
+    onBotTapped: (BotService) -> Unit,
+    onVolumeChange: (BotService, Int) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        if (discoveryError != null) {
             Text(
                 text = discoveryError,
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.primary,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(bottom = 8.dp)
                     .clickable(onClick = onClearError),
             )
         }
 
-        if (discoveredBots.isEmpty()) {
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(
-                onClick = onAddNewDevice,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(28.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.primary,
-                    contentColor = colors.onPrimary,
-                ),
-                contentPadding = PaddingValues(vertical = 14.dp),
-            ) {
-                Text(
-                    text = "Add New Device",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Ensure your Device is charged\nor\nswitched on",
-                style = MaterialTheme.typography.titleLarge,
-                color = colors.onBackground,
-                textAlign = TextAlign.Center,
+        discoveredBots.forEach { bot ->
+            DeviceSceneCard(
+                bot = bot,
+                onTap = { onBotTapped(bot) },
+                onVolumeChange = { volume -> onVolumeChange(bot, volume) },
             )
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
 
 @Composable
-private fun BotCard(
+private fun DeviceSceneCard(
     bot: BotService,
     onTap: () -> Unit,
+    onVolumeChange: (Int) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val deviceLabel = bot.txt["device"] ?: bot.serviceName
+    var volume by remember(bot.host) { mutableStateOf(50) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onTap),
-        colors = CardDefaults.cardColors(
-            containerColor = colors.surface,
-            contentColor = colors.onSurface,
-        ),
+            .height(148.dp),
+        shape = RoundedCornerShape(4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = bot.serviceName,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .weight(0.38f)
+                    .background(Color(0xFFE8E8E8))
+                    .clickable(onClick = onTap),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.side_image),
+                    contentDescription = deviceLabel,
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .weight(0.62f)
+                    .fillMaxHeight()
+                    .background(Color.Black)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = deviceLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable(onClick = onTap),
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = "Online",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SceneControlButton(label = "⏮")
+                    Spacer(modifier = Modifier.width(16.dp))
+                    SceneControlButton(label = "⏸")
+                    Spacer(modifier = Modifier.width(16.dp))
+                    SceneControlButton(label = "⏭")
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SpeakerIcon(
+                        waveCount = if (volume <= 0) 0 else if (volume < 40) 1 else if (volume < 70) 2 else 3,
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(width = 28.dp, height = 22.dp)
+                            .clickable { onVolumeChange(0) },
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    WedgeVolumeBar(
+                        volume = volume,
+                        fillColor = colors.primary,
+                        trackColor = Color(0xFF3A3A3A),
+                        onVolumeChange = {
+                            volume = it
+                            onVolumeChange(it)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(28.dp),
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun SceneControlButton(label: String) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White.copy(alpha = 0.15f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

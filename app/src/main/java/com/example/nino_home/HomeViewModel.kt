@@ -60,6 +60,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val discoveryListeners = mutableMapOf<String, NsdManager.DiscoveryListener>()
     private var volumeJob: Job? = null
 
+    fun refreshBotDiscovery() {
+        viewModelScope.launch {
+            stopBotDiscovery()
+            delay(400)
+            startBotDiscovery()
+        }
+    }
+
     fun startBotDiscovery() {
         if (discoveryListeners.isNotEmpty()) return
 
@@ -138,6 +146,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun stopBotDiscovery() {
         if (discoveryListeners.isEmpty()) return
         val snapshot = discoveryListeners.toMap()
+        discoveryListeners.clear()
         snapshot.forEach { (serviceType, listener) ->
             safeStop(serviceType, listener)
         }
