@@ -83,10 +83,13 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -97,9 +100,12 @@ import com.example.nino_home.BotService
 import com.example.nino_home.R
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
+import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val CAMERA_STREAM_PATH = "/stream"
+private const val CAMERA_STREAM_ROTATION_DEGREES = 90f
 
 private enum class HomeTab(val title: String) {
     Music("My Music"),
@@ -968,37 +974,38 @@ private fun DeviceCameraScreen(
                             """
                             (function() {
                               const styleId = 'nino-stream-fullscreen-style';
-                              if (!document.getElementById(styleId)) {
-                                const style = document.createElement('style');
+                              let style = document.getElementById(styleId);
+                              if (!style) {
+                                style = document.createElement('style');
                                 style.id = styleId;
-                                style.innerHTML = `
-                                  html, body {
-                                    margin: 0;
-                                    padding: 0;
-                                    width: 100%;
-                                    height: 100%;
-                                    overflow: hidden;
-                                    background: #fff;
-                                    touch-action: none !important;
-                                  }
-                                  body {
-                                    display: flex;
-                                    align-items: center;
-                                    justify-content: center;
-                                  }
-                                  video, img, canvas, iframe {
-                                    width: 100% !important;
-                                    height: 100% !important;
-                                    max-width: 100% !important;
-                                    max-height: 100% !important;
-                                    object-fit: contain !important;
-                                    object-position: center center !important;
-                                    background: #fff !important;
-                                    transform: none !important;
-                                  }
-                                `;
                                 document.head.appendChild(style);
                               }
+                              style.innerHTML = `
+                                html, body {
+                                  margin: 0;
+                                  padding: 0;
+                                  width: 100%;
+                                  height: 100%;
+                                  overflow: hidden;
+                                  background: #fff;
+                                  touch-action: none !important;
+                                }
+                                body {
+                                  display: flex;
+                                  align-items: center;
+                                  justify-content: center;
+                                }
+                                video, img, canvas, iframe {
+                                  width: 100% !important;
+                                  height: 100% !important;
+                                  max-width: 100% !important;
+                                  max-height: 100% !important;
+                                  object-fit: contain !important;
+                                  object-position: center center !important;
+                                  background: #fff !important;
+                                  transform: none !important;
+                                }
+                              `;
                             })();
                             """.trimIndent(),
                             null,
@@ -1046,6 +1053,7 @@ private fun DeviceCameraScreen(
                         webView = webView,
                         modifier = Modifier.fillMaxSize(),
                         interactionEnabled = false,
+                        rotationDegrees = CAMERA_STREAM_ROTATION_DEGREES,
                     )
                     IconButton(
                         onClick = { isFullScreen = false },
@@ -1090,6 +1098,7 @@ private fun DeviceCameraScreen(
                             webView = webView,
                             modifier = Modifier.fillMaxSize(),
                             interactionEnabled = true,
+                            rotationDegrees = CAMERA_STREAM_ROTATION_DEGREES,
                         )
                     }
                     IconButton(
@@ -1150,7 +1159,19 @@ private fun CameraStreamView(
     webView: WebView,
     modifier: Modifier = Modifier,
     interactionEnabled: Boolean = true,
+    rotationDegrees: Float = 0f,
 ) {
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    val quarterTurn = (abs(rotationDegrees) % 180f) > 0.1f
+    val fitScale = if (quarterTurn && viewSize.width > 0 && viewSize.height > 0) {
+        min(
+            viewSize.width.toFloat() / viewSize.height.toFloat(),
+            viewSize.height.toFloat() / viewSize.width.toFloat(),
+        )
+    } else {
+        1f
+    }
+
     webView.setOnTouchListener { _, event ->
         if (interactionEnabled) {
             false
@@ -1160,7 +1181,13 @@ private fun CameraStreamView(
     }
 
     AndroidView(
-        modifier = modifier,
+        modifier = modifier
+            .onSizeChanged { viewSize = it }
+            .graphicsLayer {
+                rotationZ = rotationDegrees
+                scaleX = fitScale
+                scaleY = fitScale
+            },
         factory = { webView },
         update = {},
     )
