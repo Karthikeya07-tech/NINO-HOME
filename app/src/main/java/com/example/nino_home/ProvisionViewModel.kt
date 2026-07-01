@@ -131,6 +131,16 @@ class ProvisionViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun clearError() = _uiState.update { it.copy(error = null) }
 
+    fun resetProvisionScreen() {
+        provisioner.disconnect()
+        _uiState.update { state ->
+            ProvisionUiState(
+                ssid = state.ssid,
+                password = state.password,
+            )
+        }
+    }
+
     fun startScan() {
         _uiState.update {
             it.copy(

@@ -49,7 +49,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -61,6 +60,7 @@ import com.example.nino_home.ProvisionViewModel
 import com.example.nino_home.R
 import com.example.nino_home.ble.ProvGattUuids
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -177,6 +177,21 @@ fun ProvisionScreen(
         showTransientStatus(err)
         delay(2200)
         viewModel.clearError()
+    }
+
+    LaunchedEffect(uiState.credentialsSent) {
+        if (!uiState.credentialsSent) return@LaunchedEffect
+        snackbarHostState.currentSnackbarData?.dismiss()
+        launch {
+            snackbarHostState.showSnackbar(
+                message = context.getString(R.string.credentials_sent_message),
+                duration = SnackbarDuration.Short,
+            )
+        }
+        delay(3000)
+        snackbarHostState.currentSnackbarData?.dismiss()
+        hasEverConnected = false
+        viewModel.resetProvisionScreen()
     }
 
     val screenContent: @Composable (PaddingValues) -> Unit = { padding ->
@@ -322,23 +337,6 @@ fun ProvisionScreen(
                 )
             }
 
-            if (uiState.credentialsSent) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = colors.primary,
-                        contentColor = colors.onPrimary,
-                    ),
-                ) {
-                    Text(
-                        text = stringResource(R.string.credentials_sent_message),
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-            }
-
             uiState.robotIp?.let { ip ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -412,8 +410,8 @@ private fun DeviceRow(
             .padding(vertical = 4.dp)
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (selected) colors.secondary else colors.surface,
-            contentColor = if (selected) colors.onSecondary else colors.onSurface,
+            containerColor = Color.White,
+            contentColor = colors.onSurface,
         ),
         border = if (selected) {
             BorderStroke(2.dp, colors.primary)
