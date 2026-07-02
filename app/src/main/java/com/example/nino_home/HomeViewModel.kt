@@ -33,6 +33,7 @@ data class BotStatus(
     val wifiSsid: String,
     val volume: Int,
     val firmware: String,
+    val faceTrackEnabled: Boolean = false,
 )
 
 data class BotCardInfo(
@@ -259,6 +260,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setFaceTrack(bot: BotService, enabled: Boolean) {
+        _uiState.update { state ->
+            state.copy(botStatus = state.botStatus?.copy(faceTrackEnabled = enabled))
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { postFaceTrack(bot, enabled) }
+                .onFailure { err ->
+                    _uiState.update { state ->
+                        state.copy(
+                            botStatus = state.botStatus?.copy(faceTrackEnabled = !enabled),
+                            statusError = err.message ?: "Failed to set face tracking",
+                        )
+                    }
+                }
+        }
+    }
+
     fun renameBot(bot: BotService, newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isEmpty()) {
@@ -372,6 +390,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun postFaceTrack(bot: BotService, enabled: Boolean) {
+        val url = URL("http://${bot.host}:${bot.port}/face/track")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3000
+            readTimeout = 3000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            val body = JSONObject().put("enabled", enabled).toString()
+            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("Face track request failed ($code)")
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun postDeviceName(bot: BotService, name: String) {
         val url = URL("http://${bot.host}:${bot.port}/device/name")
         val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -424,11 +463,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             }
             val payload = conn.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(payload)
+            val faceTrackEnabled = json.optJSONObject("face_track")?.optBoolean("enabled", false) ?: false
             BotStatus(
                 deviceName = json.optString("device_name", "ESP Assistant"),
                 wifiSsid = json.optString("wifi_ssid", "Unknown"),
                 volume = json.optInt("volume", -1),
                 firmware = json.optString("firmware", "Unknown"),
+                faceTrackEnabled = faceTrackEnabled,
             )
         } finally {
             conn.disconnect()

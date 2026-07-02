@@ -167,6 +167,9 @@ fun HomeScreen() {
                 onRenameRequested = { newName ->
                     homeUiState.selectedBot?.let { homeViewModel.renameBot(it, newName) }
                 },
+                onFaceTrackToggle = { enabled ->
+                    homeUiState.selectedBot?.let { homeViewModel.setFaceTrack(it, enabled) }
+                },
                 onBack = { showAdvancedOptions = false },
             )
             return
@@ -766,32 +769,39 @@ private fun BotDetailScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
+                                val actionButtonModifier = Modifier
+                                    .weight(1f)
+                                    .height(52.dp)
+                                val actionButtonColors = ButtonDefaults.buttonColors(
+                                    containerColor = colors.primary,
+                                    contentColor = colors.onPrimary,
+                                )
                                 Button(
                                     onClick = onOpenCamera,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = actionButtonModifier,
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = colors.primary,
-                                        contentColor = colors.onPrimary,
-                                    ),
+                                    colors = actionButtonColors,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
                                 ) {
                                     Text(
                                         text = "Device Camera",
                                         textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        maxLines = 2,
                                     )
                                 }
                                 Button(
                                     onClick = onOpenPlayZone,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = actionButtonModifier,
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = colors.primary,
-                                        contentColor = colors.onPrimary,
-                                    ),
+                                    colors = actionButtonColors,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
                                 ) {
                                     Text(
                                         text = "Play Zone",
                                         textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        maxLines = 2,
                                     )
                                 }
                             }
@@ -1200,6 +1210,7 @@ private fun AdvancedOptionsScreen(
     isUpdatingName: Boolean,
     botStatus: BotStatus?,
     onRenameRequested: (String) -> Unit,
+    onFaceTrackToggle: (Boolean) -> Unit,
     onBack: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -1400,6 +1411,26 @@ private fun AdvancedOptionsScreen(
                 OnOffToggle(
                     isOn = touchSensorOn,
                     onToggle = { touchSensorOn = it },
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Face Tracking",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onBackground,
+                )
+                OnOffToggle(
+                    isOn = botStatus?.faceTrackEnabled ?: false,
+                    onToggle = onFaceTrackToggle,
                 )
             }
         }
