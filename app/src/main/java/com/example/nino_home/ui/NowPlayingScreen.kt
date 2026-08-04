@@ -39,6 +39,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,13 +55,18 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
 import com.example.nino_home.R
+import com.example.nino_home.RecordPlayViewModel
+import com.example.nino_home.ServoAction
+import com.example.nino_home.ServoActionRepository
 import kotlin.math.roundToInt
 
 private enum class PlayerTab(val title: String) {
@@ -80,6 +86,10 @@ fun NowPlayingScreen(
     onGoHome: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val actionRepository = remember { ServoActionRepository(context) }
+    val recordPlayViewModel: RecordPlayViewModel = viewModel()
+    val recordPlayUi by recordPlayViewModel.uiState.collectAsState()
     // null = show the Now Playing player (entry state from bot tap)
     var selectedTab by remember { mutableStateOf<PlayerTab?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -90,6 +100,16 @@ fun NowPlayingScreen(
 
     LaunchedEffect(botStatus?.volume) {
         botStatus?.volume?.takeIf { it in 0..100 }?.let { volume = it }
+    }
+
+    LaunchedEffect(selectedBot) {
+        recordPlayViewModel.bindBot(selectedBot)
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == PlayerTab.Actions) {
+            recordPlayViewModel.refreshActions()
+        }
     }
 
     BackHandler(onBack = onBack)
@@ -167,8 +187,11 @@ fun NowPlayingScreen(
                     },
                     modifier = Modifier.weight(1f),
                 )
-                PlayerTab.Actions -> PlaceholderPanel(
-                    title = "Actions",
+                PlayerTab.Actions -> SavedActionsPanel(
+                    actions = recordPlayUi.actions.ifEmpty { actionRepository.loadActions() },
+                    onActionTap = { action ->
+                        recordPlayViewModel.playAction(action)
+                    },
                     modifier = Modifier.weight(1f),
                 )
                 PlayerTab.Manage -> PlaceholderPanel(
@@ -367,6 +390,69 @@ private fun PlayerMainPanel(
                     .weight(1f)
                     .height(28.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun SavedActionsPanel(
+    actions: List<ServoAction>,
+    onActionTap: (ServoAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.White)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+    ) {
+        Text(
+            text = "Actions",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
+        )
+        Text(
+            text = "Saved motor actions from Record and Play",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onBackground.copy(alpha = 0.6f),
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+
+        if (actions.isEmpty()) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "No saved actions yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onBackground.copy(alpha = 0.65f),
+            )
+        } else {
+            actions.forEach { action ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onActionTap(action) }
+                        .padding(vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = action.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onBackground,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Play ${action.name}",
+                        tint = colors.primary,
+                    )
+                }
+                HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            }
         }
     }
 }

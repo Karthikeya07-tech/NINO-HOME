@@ -37,6 +37,9 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -124,6 +127,8 @@ fun HomeScreen() {
     var showPlayZone by rememberSaveable { mutableStateOf(false) }
     var showVisualsScreen by rememberSaveable { mutableStateOf(false) }
     var showMusicPlayer by rememberSaveable { mutableStateOf(false) }
+    var showRecordAndPlay by rememberSaveable { mutableStateOf(false) }
+    var showScenesMenu by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
@@ -137,6 +142,15 @@ fun HomeScreen() {
 
     DisposableEffect(Unit) {
         onDispose { homeViewModel.stopBotDiscovery() }
+    }
+
+    if (showRecordAndPlay) {
+        val recordBot = homeUiState.selectedBot ?: homeUiState.discoveredBots.firstOrNull()
+        RecordAndPlayScreen(
+            bot = recordBot,
+            onBack = { showRecordAndPlay = false },
+        )
+        return
     }
 
     if (showVisualsScreen) {
@@ -241,9 +255,33 @@ fun HomeScreen() {
                         color = colors.onPrimary,
                     )
                 },
+                actions = {
+                    if (selectedTab == HomeTab.Create) {
+                        IconButton(onClick = { showScenesMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.MoreVert,
+                                contentDescription = "More options",
+                                tint = colors.onPrimary,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showScenesMenu,
+                            onDismissRequest = { showScenesMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Record and Play") },
+                                onClick = {
+                                    showScenesMenu = false
+                                    showRecordAndPlay = true
+                                },
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = colors.primary,
                     titleContentColor = colors.onPrimary,
+                    actionIconContentColor = colors.onPrimary,
                 ),
             )
         },
