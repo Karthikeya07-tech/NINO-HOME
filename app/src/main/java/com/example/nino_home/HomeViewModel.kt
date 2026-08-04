@@ -277,6 +277,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun playDemo(bot: BotService) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { postDemo(bot) }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(statusError = err.message ?: "Failed to play demo")
+                    }
+                }
+        }
+    }
+
     fun renameBot(bot: BotService, newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isEmpty()) {
@@ -405,6 +416,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val code = conn.responseCode
             if (code !in 200..299) {
                 throw IOException("Face track request failed ($code)")
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun postDemo(bot: BotService) {
+        val url = URL("http://${bot.host}:${bot.port}/demo")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5000
+            readTimeout = 5000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+        }
+        try {
+            val body = JSONObject().put("play", true).toString()
+            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("Demo play request failed ($code)")
             }
         } finally {
             conn.disconnect()

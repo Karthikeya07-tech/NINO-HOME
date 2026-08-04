@@ -123,11 +123,12 @@ fun HomeScreen() {
     var showDeviceCamera by rememberSaveable { mutableStateOf(false) }
     var showPlayZone by rememberSaveable { mutableStateOf(false) }
     var showVisualsScreen by rememberSaveable { mutableStateOf(false) }
+    var showMusicPlayer by rememberSaveable { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
     LaunchedEffect(selectedTab) {
-        if (selectedTab == HomeTab.Create) {
+        if (selectedTab == HomeTab.Create || selectedTab == HomeTab.Music) {
             homeViewModel.startBotDiscovery()
         } else {
             homeViewModel.stopBotDiscovery()
@@ -141,6 +142,29 @@ fun HomeScreen() {
     if (showVisualsScreen) {
         VisualsScreen(
             onBack = { showVisualsScreen = false },
+        )
+        return
+    }
+
+    if (showMusicPlayer) {
+        NowPlayingScreen(
+            selectedBot = homeUiState.selectedBot,
+            botStatus = homeUiState.botStatus,
+            onVolumeChange = { volume ->
+                homeUiState.selectedBot?.let { homeViewModel.setVolume(it, volume) }
+            },
+            onPlayDemo = {
+                homeUiState.selectedBot?.let { homeViewModel.playDemo(it) }
+            },
+            onBack = {
+                showMusicPlayer = false
+                homeViewModel.clearBotSelection()
+            },
+            onGoHome = {
+                showMusicPlayer = false
+                homeViewModel.clearBotSelection()
+                selectedTab = HomeTab.Create
+            },
         )
         return
     }
@@ -208,6 +232,8 @@ fun HomeScreen() {
                     val title = when {
                         selectedTab == HomeTab.Create && homeUiState.discoveredBots.isNotEmpty() ->
                             "Home - Scenes"
+                        selectedTab == HomeTab.Music && homeUiState.discoveredBots.isNotEmpty() ->
+                            "Home - My Music"
                         else -> "Home - ${selectedTab.title}"
                     }
                     Text(
@@ -229,7 +255,24 @@ fun HomeScreen() {
         },
     ) { padding ->
         when (selectedTab) {
-            HomeTab.Music -> MusicPlaceholder(padding)
+            HomeTab.Music -> MusicLanding(
+                contentPadding = padding,
+                onAddNewDevice = { selectedTab = HomeTab.Configure },
+                discoveredBots = homeUiState.discoveredBots,
+                botCardInfo = homeUiState.botCardInfo,
+                isDiscoveringBots = homeUiState.isDiscoveringBots,
+                discoveryError = homeUiState.discoveryError,
+                onRefreshBots = { homeViewModel.refreshBotDiscovery() },
+                onClearError = homeViewModel::clearDiscoveryError,
+                onBotTapped = { bot ->
+                    homeViewModel.fetchBotStatus(bot)
+                    showMusicPlayer = true
+                },
+                onVolumeChange = { bot, volume ->
+                    homeViewModel.setVolume(bot, volume)
+                },
+                onOpenVisuals = { showVisualsScreen = true },
+            )
             HomeTab.Create -> CreateLanding(
                 contentPadding = padding,
                 onAddNewDevice = { selectedTab = HomeTab.Configure },
@@ -254,6 +297,37 @@ fun HomeScreen() {
             )
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MusicLanding(
+    contentPadding: PaddingValues,
+    onAddNewDevice: () -> Unit,
+    discoveredBots: List<BotService>,
+    botCardInfo: Map<String, BotCardInfo>,
+    isDiscoveringBots: Boolean,
+    discoveryError: String?,
+    onRefreshBots: () -> Unit,
+    onClearError: () -> Unit,
+    onBotTapped: (BotService) -> Unit,
+    onVolumeChange: (BotService, Int) -> Unit,
+    onOpenVisuals: () -> Unit,
+) {
+    // Same layout as home scenes: device cards when found, setup empty state otherwise.
+    CreateLanding(
+        contentPadding = contentPadding,
+        onAddNewDevice = onAddNewDevice,
+        discoveredBots = discoveredBots,
+        botCardInfo = botCardInfo,
+        isDiscoveringBots = isDiscoveringBots,
+        discoveryError = discoveryError,
+        onRefreshBots = onRefreshBots,
+        onClearError = onClearError,
+        onBotTapped = onBotTapped,
+        onVolumeChange = onVolumeChange,
+        onOpenVisuals = onOpenVisuals,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1640,23 +1714,6 @@ private fun DetailRow(
             text = value,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
-private fun MusicPlaceholder(contentPadding: PaddingValues) {
-    val colors = MaterialTheme.colorScheme
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(contentPadding),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "My Music",
-            style = MaterialTheme.typography.headlineSmall,
-            color = colors.onBackground,
         )
     }
 }
