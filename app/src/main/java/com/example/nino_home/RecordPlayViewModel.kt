@@ -8,8 +8,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.time.Instant
+import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,9 +41,21 @@ data class RecordPlayUiState(
     val isPlaying: Boolean = false,
     val isBusy: Boolean = false,
     val defaultHoldMs: Int = 500,
+    val selectedAudioId: String? = null,
+    val selectedAudioName: String? = null,
+    val selectedAudioDurationMs: Int? = null,
+    val mediaItems: List<MediaItem> = MediaLibrary.all(),
+    val autoDurationSeconds: String = "5",
+    val autoAudioId: String? = null,
+    val autoAudioName: String? = null,
+    val autoAudioDurationMs: Int? = null,
+    val pendingAutoAction: ServoAction? = null,
     val statusMessage: String? = null,
     val error: String? = null,
-)
+) {
+    val actionDurationMs: Int get() = frames.sumOf { it.holdMs }
+    val hasAudio: Boolean get() = !selectedAudioId.isNullOrBlank()
+}
 
 class RecordPlayViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
@@ -48,6 +63,13 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         const val MOTOR_TILT = 1
         const val MOTOR_PAN = 2
         const val NEUTRAL_POSITION = 512
+        private const val AUTO_TILT_MIN = 510
+        private const val AUTO_TILT_MAX = 550
+        private const val AUTO_PAN_MIN = 400
+        private const val AUTO_PAN_MAX = 600
+        private const val AUTO_HOLD_TARGET_MS = 500
+        private const val AUTO_MIN_FRAMES = 2
+        private const val AUTO_MAX_FRAMES = 40
     }
 
     private val repository = ServoActionRepository(application)
@@ -85,6 +107,10 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                 motors = MotorSelection.Both,
                 frames = emptyList(),
                 selectedFrameIndex = -1,
+                selectedAudioId = null,
+                selectedAudioName = null,
+                selectedAudioDurationMs = null,
+                mediaItems = MediaLibrary.all(),
                 statusMessage = "Move the head, then tap Add Frame.",
                 error = null,
             )
@@ -92,6 +118,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun openActionForEdit(action: ServoAction) {
+        val media = MediaLibrary.findById(action.audioId)
         _uiState.update {
             it.copy(
                 editingActionId = action.id,
@@ -99,10 +126,196 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                 motors = motorsFromIds(action.motors),
                 frames = action.frames.reindexed(),
                 selectedFrameIndex = if (action.frames.isNotEmpty()) 0 else -1,
+                selectedAudioId = action.audioId,
+                selectedAudioName = media?.name ?: action.audioName,
+                selectedAudioDurationMs = media?.durationMs ?: action.audioDurationMs,
+                mediaItems = MediaLibrary.all(),
                 statusMessage = "Editing “${action.name}”",
                 error = null,
             )
         }
+    }
+
+    fun selectAudio(media: MediaItem) {
+        _uiState.update {
+            it.copy(
+                selectedAudioId = media.id,
+                selectedAudioName = media.name,
+                selectedAudioDurationMs = media.durationMs,
+                statusMessage = "Audio “${media.name}” selected",
+                error = null,
+            )
+        }
+    }
+
+    fun clearAudio() {
+        _uiState.update {
+            it.copy(
+                selectedAudioId = null,
+                selectedAudioName = null,
+                selectedAudioDurationMs = null,
+                statusMessage = "Audio cleared",
+            )
+        }
+    }
+
+    fun startAutoCreate() {
+        _uiState.update {
+            it.copy(
+                autoDurationSeconds = "5",
+                autoAudioId = null,
+                autoAudioName = null,
+                autoAudioDurationMs = null,
+                pendingAutoAction = null,
+                mediaItems = MediaLibrary.all(),
+                error = null,
+                statusMessage = null,
+            )
+        }
+    }
+
+    fun updateAutoDurationSeconds(value: String) {
+        val filtered = value.filter { it.isDigit() }.take(3)
+        _uiState.update { it.copy(autoDurationSeconds = filtered, error = null) }
+    }
+
+    fun selectAutoAudio(media: MediaItem) {
+        _uiState.update {
+            it.copy(
+                autoAudioId = media.id,
+                autoAudioName = media.name,
+                autoAudioDurationMs = media.durationMs,
+                error = null,
+            )
+        }
+    }
+
+    fun clearAutoAudio() {
+        _uiState.update {
+            it.copy(
+                autoAudioId = null,
+                autoAudioName = null,
+                autoAudioDurationMs = null,
+            )
+        }
+    }
+
+    fun createAutoAction() {
+        val state = _uiState.value
+        val seconds = state.autoDurationSeconds.toIntOrNull()
+        if (seconds == null || seconds <= 0) {
+            _uiState.update { it.copy(error = "Enter an action duration in seconds (1 or more).") }
+            return
+        }
+        if (seconds > 120) {
+            _uiState.update { it.copy(error = "Duration must be 120 seconds or less.") }
+            return
+        }
+        val target = bot
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isBusy = true, error = null, statusMessage = "Moving to neutral…") }
+            if (target != null) {
+                runCatching {
+                    listOf(MOTOR_TILT, MOTOR_PAN).forEach { id ->
+                        postGoal(target, id = id, position = NEUTRAL_POSITION, speed = 22)
+                    }
+                    delay(700)
+                }
+            }
+            val action = generateRandomAutoAction(
+                durationMs = seconds * 1000,
+                audioId = state.autoAudioId,
+                audioName = state.autoAudioName,
+                audioDurationMs = state.autoAudioDurationMs,
+            )
+            _uiState.update {
+                it.copy(
+                    isBusy = false,
+                    pendingAutoAction = action,
+                    statusMessage = "Created “${action.name}” (${action.frameCount} frames).",
+                )
+            }
+        }
+    }
+
+    fun confirmAddPendingAutoAction() {
+        val pending = _uiState.value.pendingAutoAction ?: return
+        repository.upsert(pending)
+        _uiState.update {
+            it.copy(
+                actions = repository.loadActions(),
+                pendingAutoAction = null,
+                statusMessage = "Added “${pending.name}” to Actions",
+                error = null,
+            )
+        }
+    }
+
+    fun discardPendingAutoAction() {
+        _uiState.update {
+            it.copy(
+                pendingAutoAction = null,
+                statusMessage = "Auto action discarded",
+            )
+        }
+    }
+
+    private fun generateRandomAutoAction(
+        durationMs: Int,
+        audioId: String?,
+        audioName: String?,
+        audioDurationMs: Int?,
+    ): ServoAction {
+        val frameCount = (durationMs / AUTO_HOLD_TARGET_MS)
+            .coerceIn(AUTO_MIN_FRAMES, AUTO_MAX_FRAMES)
+        val baseHold = durationMs / frameCount
+        val remainder = durationMs % frameCount
+        val usedPoses = mutableSetOf<Pair<Int, Int>>()
+        val frames = buildList {
+            for (i in 0 until frameCount) {
+                var tilt: Int
+                var pan: Int
+                var attempts = 0
+                do {
+                    tilt = Random.nextInt(AUTO_TILT_MIN, AUTO_TILT_MAX + 1)
+                    pan = Random.nextInt(AUTO_PAN_MIN, AUTO_PAN_MAX + 1)
+                    attempts++
+                } while ((tilt to pan) in usedPoses && attempts < 200)
+                usedPoses.add(tilt to pan)
+                val hold = baseHold + if (i < remainder) 1 else 0
+                add(
+                    ActionFrame(
+                        index = i,
+                        holdMs = hold,
+                        pose = ServoPose(
+                            positions = mapOf(
+                                MOTOR_TILT to tilt,
+                                MOTOR_PAN to pan,
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+        val now = Instant.now().toString()
+        val existingNames = repository.loadActions().map { it.name }.toSet()
+        var nameIndex = existingNames.count { it.startsWith("Auto Action") } + 1
+        var name = "Auto Action $nameIndex"
+        while (name in existingNames) {
+            nameIndex++
+            name = "Auto Action $nameIndex"
+        }
+        return ServoAction(
+            id = newActionId(),
+            name = name,
+            createdAt = now,
+            updatedAt = now,
+            motors = listOf(MOTOR_TILT, MOTOR_PAN),
+            frames = frames,
+            audioId = audioId,
+            audioName = audioName,
+            audioDurationMs = audioDurationMs,
+        )
     }
 
     fun updateActionName(name: String) {
@@ -285,6 +498,9 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
             updatedAt = now,
             motors = selectedMotorIds(),
             frames = state.frames.reindexed(),
+            audioId = state.selectedAudioId,
+            audioName = state.selectedAudioName,
+            audioDurationMs = state.selectedAudioDurationMs,
         )
         repository.upsert(action)
         if (state.isRecording) {
@@ -333,15 +549,27 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isBusy = true, isPlaying = true, error = null, statusMessage = "Playing “${action.name}”…") }
-            val result = runCatching { postPlay(target, action) }
+            val audioLabel = action.audioName?.takeIf { action.hasAudio }
+            val status = if (audioLabel != null) {
+                "Playing “${action.name}” with “$audioLabel”…"
+            } else {
+                "Playing “${action.name}”…"
+            }
+            _uiState.update {
+                it.copy(isBusy = true, isPlaying = true, error = null, statusMessage = status)
+            }
+            val result = runCatching { playActionWithLinkedAudio(target, action) }
             result.fold(
                 onSuccess = {
                     _uiState.update {
                         it.copy(
                             isBusy = false,
                             isPlaying = false,
-                            statusMessage = "Finished “${action.name}”",
+                            statusMessage = if (audioLabel != null) {
+                                "Finished “${action.name}” + audio"
+                            } else {
+                                "Finished “${action.name}”"
+                            },
                         )
                     }
                 },
@@ -351,6 +579,51 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                             isBusy = false,
                             isPlaying = false,
                             error = err.message ?: "Play failed",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * Play media from My Music. If a saved action is linked to this audio,
+     * play audio + that action together; otherwise play the audio alone.
+     */
+    fun playMedia(media: MediaItem) {
+        val target = bot ?: return missingBot()
+        val mapped = repository.loadActions()
+            .firstOrNull { it.audioId == media.id && it.frames.isNotEmpty() }
+        if (mapped != null) {
+            playAction(mapped)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    isPlaying = true,
+                    error = null,
+                    statusMessage = "Playing “${media.name}”…",
+                )
+            }
+            val result = runCatching { startMediaAudio(target, media) }
+            result.fold(
+                onSuccess = {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            isPlaying = false,
+                            statusMessage = "Started “${media.name}”",
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            isPlaying = false,
+                            error = err.message ?: "Audio play failed",
                         )
                     }
                 },
@@ -371,6 +644,9 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
             updatedAt = "",
             motors = selectedMotorIds(),
             frames = state.frames.reindexed(),
+            audioId = state.selectedAudioId,
+            audioName = state.selectedAudioName,
+            audioDurationMs = state.selectedAudioDurationMs,
         )
         playAction(draft)
     }
@@ -575,6 +851,36 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         postJson(url, body)
     }
 
+    private suspend fun playActionWithLinkedAudio(bot: BotService, action: ServoAction) {
+        coroutineScope {
+            val media = MediaLibrary.findById(action.audioId)
+            val audioDeferred = media?.let { item ->
+                // Start audio immediately so it overlaps with motor playback.
+                async { runCatching { startMediaAudio(bot, item) } }
+            }
+            if (audioDeferred != null) {
+                // Brief head-start so speaker audio begins with the first frame.
+                delay(80)
+            }
+            val playResult = runCatching { postPlay(bot, action) }
+            val audioResult = audioDeferred?.await()
+            playResult.getOrThrow()
+            audioResult?.getOrThrow()
+        }
+    }
+
+    private fun startMediaAudio(bot: BotService, media: MediaItem) {
+        when (media.kind) {
+            MediaKind.Demo -> postDemo(bot)
+        }
+    }
+
+    private fun postDemo(bot: BotService) {
+        val url = URL("http://${bot.host}:${bot.port}/demo")
+        val body = JSONObject().put("play", true)
+        postJson(url, body, readTimeoutMs = 5_000)
+    }
+
     private fun postPlay(bot: BotService, action: ServoAction) {
         val url = URL("http://${bot.host}:${bot.port}/servo/play")
         val framesJson = JSONArray()
@@ -593,6 +899,11 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
             .put("name", action.name)
             .put("speed", 22)
             .put("frames", framesJson)
+        // Optional hint for firmware that understands linked media.
+        action.audioId?.takeIf { it.isNotBlank() }?.let { audioId ->
+            body.put("audio_id", audioId)
+            action.audioName?.let { body.put("audio_name", it) }
+        }
         postJson(url, body, readTimeoutMs = 60_000)
     }
 

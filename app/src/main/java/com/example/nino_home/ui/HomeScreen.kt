@@ -167,9 +167,6 @@ fun HomeScreen() {
             onVolumeChange = { volume ->
                 homeUiState.selectedBot?.let { homeViewModel.setVolume(it, volume) }
             },
-            onPlayDemo = {
-                homeUiState.selectedBot?.let { homeViewModel.playDemo(it) }
-            },
             onBack = {
                 showMusicPlayer = false
                 homeViewModel.clearBotSelection()

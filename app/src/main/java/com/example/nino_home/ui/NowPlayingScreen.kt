@@ -63,10 +63,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
+import com.example.nino_home.MediaItem
+import com.example.nino_home.MediaLibrary
 import com.example.nino_home.R
 import com.example.nino_home.RecordPlayViewModel
 import com.example.nino_home.ServoAction
 import com.example.nino_home.ServoActionRepository
+import com.example.nino_home.formatDurationSeconds
 import kotlin.math.roundToInt
 
 private enum class PlayerTab(val title: String) {
@@ -81,7 +84,6 @@ fun NowPlayingScreen(
     selectedBot: BotService?,
     botStatus: BotStatus?,
     onVolumeChange: (Int) -> Unit,
-    onPlayDemo: () -> Unit,
     onBack: () -> Unit,
     onGoHome: () -> Unit,
 ) {
@@ -180,9 +182,10 @@ fun NowPlayingScreen(
                 )
                 PlayerTab.Media -> LocalContentPanel(
                     deviceName = deviceName,
-                    onPlayDemo = {
+                    mediaItems = MediaLibrary.all(),
+                    onPlayMedia = { item ->
                         isPlaying = true
-                        onPlayDemo()
+                        recordPlayViewModel.playMedia(item)
                         selectedTab = null
                     },
                     modifier = Modifier.weight(1f),
@@ -206,7 +209,8 @@ fun NowPlayingScreen(
 @Composable
 private fun LocalContentPanel(
     deviceName: String,
-    onPlayDemo: () -> Unit,
+    mediaItems: List<MediaItem>,
+    onPlayMedia: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -232,48 +236,59 @@ private fun LocalContentPanel(
         HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
         Spacer(modifier = Modifier.height(8.dp))
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onPlayDemo)
-                .padding(vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFE8E8E8)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.side_image),
-                    contentDescription = null,
-                    modifier = Modifier.size(36.dp),
-                    contentScale = ContentScale.Fit,
-                )
-            }
-            Spacer(modifier = Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Demo",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = colors.onBackground,
-                )
-                Text(
-                    text = "Built-in firmware script",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onBackground.copy(alpha = 0.55f),
-                )
-            }
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = "Play Demo",
-                tint = colors.primary,
+        if (mediaItems.isEmpty()) {
+            Text(
+                text = "No media yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onBackground.copy(alpha = 0.6f),
+                modifier = Modifier.padding(vertical = 16.dp),
             )
+        } else {
+            mediaItems.forEach { item ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = { onPlayMedia(item) })
+                        .padding(vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFE8E8E8)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.side_image),
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.onBackground,
+                        )
+                        Text(
+                            text = "${item.description} · ${formatDurationSeconds(item.durationMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onBackground.copy(alpha = 0.55f),
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Play ${item.name}",
+                        tint = colors.primary,
+                    )
+                }
+                HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+            }
         }
-        HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
     }
 }
 

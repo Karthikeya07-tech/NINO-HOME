@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
@@ -33,6 +34,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -48,6 +51,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -67,13 +72,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.ActionFrame
 import com.example.nino_home.BotService
 import com.example.nino_home.InsertMode
+import com.example.nino_home.MediaItem
 import com.example.nino_home.MotorSelection
 import com.example.nino_home.RecordPlayViewModel
 import com.example.nino_home.ServoAction
+import com.example.nino_home.formatDurationSeconds
 
 private enum class RecordPlayPage {
     Actions,
     Editor,
+    AutoCreate,
     Guide,
 }
 
@@ -90,6 +98,7 @@ fun RecordAndPlayScreen(
     var renameTarget by remember { mutableStateOf<ServoAction?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ServoAction?>(null) }
+    var editorMenuExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(bot) {
         viewModel.bindBot(bot)
@@ -108,6 +117,9 @@ fun RecordAndPlayScreen(
         when {
             page == RecordPlayPage.Guide -> {
                 page = RecordPlayPage.Actions
+            }
+            page == RecordPlayPage.AutoCreate -> {
+                page = RecordPlayPage.Editor
             }
             page == RecordPlayPage.Editor -> {
                 if (uiState.isRecording) viewModel.leaveRecordMode()
@@ -130,6 +142,7 @@ fun RecordAndPlayScreen(
                         text = when (page) {
                             RecordPlayPage.Actions -> "Actions"
                             RecordPlayPage.Editor -> "Action Editor"
+                            RecordPlayPage.AutoCreate -> "Auto action creation"
                             RecordPlayPage.Guide -> "Record & Play Guide"
                         },
                         color = colors.onPrimary,
@@ -140,6 +153,7 @@ fun RecordAndPlayScreen(
                         onClick = {
                             when (page) {
                                 RecordPlayPage.Guide -> page = RecordPlayPage.Actions
+                                RecordPlayPage.AutoCreate -> page = RecordPlayPage.Editor
                                 RecordPlayPage.Editor -> {
                                     if (uiState.isRecording) viewModel.leaveRecordMode()
                                     page = RecordPlayPage.Actions
@@ -177,6 +191,30 @@ fun RecordAndPlayScreen(
                                     color = colors.onPrimary,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                    if (page == RecordPlayPage.Editor) {
+                        Box {
+                            IconButton(onClick = { editorMenuExpanded = true }) {
+                                Icon(
+                                    imageVector = Icons.Filled.MoreVert,
+                                    contentDescription = "More",
+                                    tint = colors.onPrimary,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = editorMenuExpanded,
+                                onDismissRequest = { editorMenuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Auto action creation") },
+                                    onClick = {
+                                        editorMenuExpanded = false
+                                        viewModel.startAutoCreate()
+                                        page = RecordPlayPage.AutoCreate
+                                    },
                                 )
                             }
                         }
@@ -229,8 +267,14 @@ fun RecordAndPlayScreen(
                 isBusy = uiState.isBusy,
                 statusMessage = uiState.statusMessage,
                 error = uiState.error,
+                selectedAudioId = uiState.selectedAudioId,
+                selectedAudioName = uiState.selectedAudioName,
+                selectedAudioDurationMs = uiState.selectedAudioDurationMs,
+                mediaItems = uiState.mediaItems,
                 onNameChange = viewModel::updateActionName,
                 onMotorsChange = viewModel::setMotors,
+                onSelectAudio = viewModel::selectAudio,
+                onClearAudio = viewModel::clearAudio,
                 onEnterRecord = viewModel::enterRecordMode,
                 onLeaveRecord = viewModel::leaveRecordMode,
                 onSelectFrame = viewModel::selectFrame,
@@ -252,10 +296,72 @@ fun RecordAndPlayScreen(
                 onClearError = viewModel::clearError,
             )
 
+            RecordPlayPage.AutoCreate -> AutoCreateActionPage(
+                contentPadding = padding,
+                durationSeconds = uiState.autoDurationSeconds,
+                selectedAudioId = uiState.autoAudioId,
+                selectedAudioName = uiState.autoAudioName,
+                selectedAudioDurationMs = uiState.autoAudioDurationMs,
+                mediaItems = uiState.mediaItems,
+                isBusy = uiState.isBusy,
+                statusMessage = uiState.statusMessage,
+                error = uiState.error,
+                onDurationChange = viewModel::updateAutoDurationSeconds,
+                onSelectAudio = viewModel::selectAutoAudio,
+                onClearAudio = viewModel::clearAutoAudio,
+                onCreate = viewModel::createAutoAction,
+                onClearError = viewModel::clearError,
+            )
+
             RecordPlayPage.Guide -> RecordPlayGuidePage(
                 contentPadding = padding,
             )
         }
+    }
+
+    uiState.pendingAutoAction?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { viewModel.discardPendingAutoAction() },
+            title = { Text("Add to Actions?") },
+            text = {
+                Column {
+                    Text(
+                        text = "Created “${pending.name}”.",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "${pending.frameCount} frames · ${formatDurationSeconds(pending.durationMs)}" +
+                            if (pending.hasAudio) {
+                                "\nAudio: ${pending.audioName ?: "Selected"} · ${formatDurationSeconds(pending.audioDurationMs)}"
+                            } else {
+                                ""
+                            },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Add this auto action to the Actions page?",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.confirmAddPendingAutoAction()
+                        page = RecordPlayPage.Actions
+                    },
+                ) {
+                    Text("Add")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.discardPendingAutoAction() }) {
+                    Text("Discard")
+                }
+            },
+        )
     }
 
     renameTarget?.let { action ->
@@ -334,12 +440,6 @@ private fun ActionsListPage(
             style = MaterialTheme.typography.bodyMedium,
             color = colors.onBackground.copy(alpha = 0.75f),
         )
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = bot?.let { "Device: ${it.host}:${it.port}" } ?: "No device on Wi-Fi",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (bot == null) colors.primary else colors.onBackground,
-        )
 
         Spacer(modifier = Modifier.height(16.dp))
         Button(
@@ -354,7 +454,7 @@ private fun ActionsListPage(
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("New Action")
+            Text("Create an action")
         }
 
         if (isPlaying) {
@@ -425,11 +525,6 @@ private fun ActionListCard(
     onDelete: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    val motorsLabel = when {
-        action.motors.toSet() == setOf(1) -> "Tilt"
-        action.motors.toSet() == setOf(2) -> "Pan"
-        else -> "Tilt + Pan"
-    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black),
@@ -443,10 +538,18 @@ private fun ActionListCard(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "${action.frameCount} frames · ${action.durationMs} ms · $motorsLabel",
+                text = "${action.frameCount} frames · ${formatDurationSeconds(action.durationMs)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Black.copy(alpha = 0.7f),
             )
+            if (action.hasAudio) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Audio: ${action.audioName ?: "Selected"} · ${formatDurationSeconds(action.audioDurationMs)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Black.copy(alpha = 0.7f),
+                )
+            }
             Spacer(modifier = Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -536,8 +639,14 @@ private fun ActionEditorPage(
     isBusy: Boolean,
     statusMessage: String?,
     error: String?,
+    selectedAudioId: String?,
+    selectedAudioName: String?,
+    selectedAudioDurationMs: Int?,
+    mediaItems: List<MediaItem>,
     onNameChange: (String) -> Unit,
     onMotorsChange: (MotorSelection) -> Unit,
+    onSelectAudio: (MediaItem) -> Unit,
+    onClearAudio: () -> Unit,
     onEnterRecord: () -> Unit,
     onLeaveRecord: () -> Unit,
     onSelectFrame: (Int) -> Unit,
@@ -567,6 +676,8 @@ private fun ActionEditorPage(
     val selectedFrame = frames.getOrNull(selectedFrameIndex)
     val tiltLive = liveServos.find { it.id == 1 }?.position
     val panLive = liveServos.find { it.id == 2 }?.position
+    val actionDurationMs = frames.sumOf { it.holdMs }
+    var showAudioPicker by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -599,6 +710,87 @@ private fun ActionEditorPage(
             MotorChip("Tilt", motors == MotorSelection.Tilt) { onMotorsChange(MotorSelection.Tilt) }
             MotorChip("Pan", motors == MotorSelection.Pan) { onMotorsChange(MotorSelection.Pan) }
             MotorChip("Both", motors == MotorSelection.Both) { onMotorsChange(MotorSelection.Both) }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+            text = "Audio",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color.Black),
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                if (selectedAudioId == null) {
+                    Text(
+                        text = "No audio selected",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground.copy(alpha = 0.65f),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { showAudioPicker = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("Select audio from My Music")
+                    }
+                } else {
+                    Text(
+                        text = selectedAudioName ?: "Selected audio",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onBackground,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Audio duration: ${formatDurationSeconds(selectedAudioDurationMs)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground.copy(alpha = 0.7f),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedButton(
+                            onClick = { showAudioPicker = true },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Change")
+                        }
+                        OutlinedButton(
+                            onClick = onClearAudio,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Clear")
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = colors.outline.copy(alpha = 0.25f))
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Action duration: ${formatDurationSeconds(actionDurationMs)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onBackground,
+                )
+                if (selectedAudioId != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Audio duration: ${formatDurationSeconds(selectedAudioDurationMs)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground,
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
@@ -824,6 +1016,259 @@ private fun ActionEditorPage(
         }
         Spacer(modifier = Modifier.height(20.dp))
     }
+
+    if (showAudioPicker) {
+        AudioPickerDialog(
+            mediaItems = mediaItems,
+            selectedAudioId = selectedAudioId,
+            onDismiss = { showAudioPicker = false },
+            onSelect = { media ->
+                onSelectAudio(media)
+                showAudioPicker = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AutoCreateActionPage(
+    contentPadding: PaddingValues,
+    durationSeconds: String,
+    selectedAudioId: String?,
+    selectedAudioName: String?,
+    selectedAudioDurationMs: Int?,
+    mediaItems: List<MediaItem>,
+    isBusy: Boolean,
+    statusMessage: String?,
+    error: String?,
+    onDurationChange: (String) -> Unit,
+    onSelectAudio: (MediaItem) -> Unit,
+    onClearAudio: () -> Unit,
+    onCreate: () -> Unit,
+    onClearError: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.onBackground,
+        unfocusedTextColor = colors.onBackground,
+        focusedBorderColor = colors.primary,
+        unfocusedBorderColor = colors.outline,
+        cursorColor = colors.primary,
+        focusedLabelColor = colors.primary,
+        unfocusedLabelColor = colors.onBackground,
+    )
+    var showAudioPicker by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(contentPadding)
+            .padding(horizontal = 20.dp, vertical = 14.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Text(
+            text = "Generate a random head motion within safe angles, then choose whether to add it to Actions.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onBackground.copy(alpha = 0.75f),
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Tilt 510–550 · Pan 400–600 · motors start at neutral",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onBackground.copy(alpha = 0.6f),
+        )
+
+        Spacer(modifier = Modifier.height(18.dp))
+        OutlinedTextField(
+            value = durationSeconds,
+            onValueChange = onDurationChange,
+            label = { Text("Action duration (seconds)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth(),
+            colors = fieldColors,
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Audio",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onBackground,
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color.Black),
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                if (selectedAudioId == null) {
+                    Text(
+                        text = "No audio selected (optional)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground.copy(alpha = 0.65f),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { showAudioPicker = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("Select audio from My Music")
+                    }
+                } else {
+                    Text(
+                        text = selectedAudioName ?: "Selected audio",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onBackground,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Audio duration: ${formatDurationSeconds(selectedAudioDurationMs)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground.copy(alpha = 0.7f),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedButton(
+                            onClick = { showAudioPicker = true },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Change")
+                        }
+                        OutlinedButton(
+                            onClick = onClearAudio,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Clear")
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        statusMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = colors.onBackground)
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+        error?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.primary,
+                modifier = Modifier.clickable(onClick = onClearError),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Button(
+            onClick = onCreate,
+            enabled = !isBusy && durationSeconds.toIntOrNull()?.let { it > 0 } == true,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.primary,
+                contentColor = colors.onPrimary,
+            ),
+        ) {
+            Text(if (isBusy) "Creating…" else "Create action")
+        }
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+
+    if (showAudioPicker) {
+        AudioPickerDialog(
+            mediaItems = mediaItems,
+            selectedAudioId = selectedAudioId,
+            onDismiss = { showAudioPicker = false },
+            onSelect = { media ->
+                onSelectAudio(media)
+                showAudioPicker = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AudioPickerDialog(
+    mediaItems: List<MediaItem>,
+    selectedAudioId: String?,
+    onDismiss: () -> Unit,
+    onSelect: (MediaItem) -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select audio") },
+        text = {
+            Column {
+                Text(
+                    text = "From My Music → Media",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onBackground.copy(alpha = 0.65f),
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                if (mediaItems.isEmpty()) {
+                    Text(
+                        text = "No media available yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onBackground.copy(alpha = 0.7f),
+                    )
+                } else {
+                    mediaItems.forEachIndexed { index, item ->
+                        val selected = item.id == selectedAudioId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(item) }
+                                .background(
+                                    if (selected) colors.primary.copy(alpha = 0.1f) else Color.Transparent,
+                                    RoundedCornerShape(8.dp),
+                                )
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.onBackground,
+                                )
+                                Text(
+                                    text = item.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onBackground.copy(alpha = 0.6f),
+                                )
+                            }
+                            Text(
+                                text = formatDurationSeconds(item.durationMs),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.onBackground,
+                            )
+                        }
+                        if (index < mediaItems.lastIndex) {
+                            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable
@@ -916,7 +1361,7 @@ private fun RecordPlayGuidePage(
         GuideSection(
             title = "Actions page buttons",
             body = "? (circle) — opens this guide.\n" +
-                "New Action — start a blank action in the editor.\n" +
+                "Create an action — start a blank action in the editor.\n" +
                 "Stop Play — stop an action that is currently playing.\n" +
                 "Play (on a card) — run that saved action on the bot.\n" +
                 "Edit — open the action in the editor.\n" +
@@ -925,7 +1370,7 @@ private fun RecordPlayGuidePage(
         )
         GuideSection(
             title = "Create an action (step by step)",
-            body = "1. Tap New Action and enter a name.\n" +
+            body = "1. Tap Create an action and enter a name.\n" +
                 "2. Choose motors: Tilt, Pan, or Both.\n" +
                 "3. Tap Enter Record Mode.\n" +
                 "   Motors automatically move to Neutral (512), then torque turns off for hand teaching.\n" +
@@ -940,6 +1385,7 @@ private fun RecordPlayGuidePage(
             title = "Action Editor controls",
             body = "Action name — required before Save.\n" +
                 "Tilt / Pan / Both — which motors to capture and move.\n" +
+                "Audio — optional clip from My Music → Media; shows audio duration next to action duration.\n" +
                 "Enter Record Mode — go to neutral 512, then enable hand teach + live angles.\n" +
                 "Leave Record Mode — stop teaching mode and restore normal torque behavior.\n" +
                 "Neutral — send selected motors to 512 anytime.\n" +
@@ -953,12 +1399,14 @@ private fun RecordPlayGuidePage(
                 "Preview — move bot to the selected frame pose only.\n" +
                 "Play Action — play current editor frames on the bot.\n" +
                 "Stop Play — stop playback.\n" +
-                "Save Action — store name + frames on the phone.",
+                "Save Action — store name + frames (+ optional audio) on the phone.",
         )
         GuideSection(
             title = "My Music → Actions",
             body = "Saved action names also appear under My Music → device → Actions.\n" +
-                "Tap a name to play that action. Create and edit still happen in Record and Play.",
+                "Tap a name to play that action (and its linked audio, if any).\n" +
+                "Tap media under My Music → Media to play that audio; if an action is linked to it, both play together.\n" +
+                "Create and edit still happen in Record and Play.",
         )
         GuideSection(
             title = "Tips",
@@ -966,12 +1414,6 @@ private fun RecordPlayGuidePage(
                 "Neutral and Enter Record Mode both use position 512.\n" +
                 "Need at least one frame to Save or Play; two or more frames make a motion.\n" +
                 "If Play fails, confirm phone and bot share the same Wi-Fi.",
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(
-            text = "Full written guide: rec&play guide.md",
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.onBackground.copy(alpha = 0.55f),
         )
         Spacer(modifier = Modifier.height(16.dp))
     }

@@ -23,9 +23,14 @@ data class ServoAction(
     val updatedAt: String,
     val motors: List<Int>,
     val frames: List<ActionFrame>,
+    /** Optional media id from [MediaLibrary] / My Music → Media. */
+    val audioId: String? = null,
+    val audioName: String? = null,
+    val audioDurationMs: Int? = null,
 ) {
     val durationMs: Int get() = frames.sumOf { it.holdMs }
     val frameCount: Int get() = frames.size
+    val hasAudio: Boolean get() = !audioId.isNullOrBlank()
 }
 
 data class LiveServo(
@@ -62,6 +67,13 @@ fun ServoAction.toJson(): JSONObject {
         .put("updated_at", updatedAt)
         .put("motors", JSONArray(motors))
         .put("frames", framesJson)
+        .apply {
+            if (!audioId.isNullOrBlank()) {
+                put("audio_id", audioId)
+                put("audio_name", audioName ?: "")
+                if (audioDurationMs != null) put("audio_duration_ms", audioDurationMs)
+            }
+        }
 }
 
 fun JSONObject.toServoAction(): ServoAction {
@@ -89,6 +101,7 @@ fun JSONObject.toServoAction(): ServoAction {
             )
         }
     }.sortedBy { it.index }
+    val audioId = optString("audio_id", "").ifBlank { null }
     return ServoAction(
         id = optString("id", UUID.randomUUID().toString()),
         name = optString("name", "Untitled"),
@@ -96,6 +109,9 @@ fun JSONObject.toServoAction(): ServoAction {
         updatedAt = optString("updated_at", ""),
         motors = motors.ifEmpty { listOf(1, 2) },
         frames = frames,
+        audioId = audioId,
+        audioName = optString("audio_name", "").ifBlank { null },
+        audioDurationMs = if (has("audio_duration_ms")) optInt("audio_duration_ms") else null,
     )
 }
 
