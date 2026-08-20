@@ -145,9 +145,9 @@ fun HomeScreen() {
     }
 
     if (showRecordAndPlay) {
-        val recordBot = homeUiState.selectedBot ?: homeUiState.discoveredBots.firstOrNull()
         RecordAndPlayScreen(
-            bot = recordBot,
+            discoveredBots = homeUiState.discoveredBots,
+            botCardInfo = homeUiState.botCardInfo,
             onBack = { showRecordAndPlay = false },
         )
         return
@@ -1326,10 +1326,6 @@ private fun AdvancedOptionsScreen(
     val deviceName = botStatus?.deviceName ?: selectedBot?.serviceName ?: "Device"
     val firmware = botStatus?.firmware ?: "Unknown"
     val ipAddress = selectedBot?.host ?: "Unknown"
-    val serviceType = selectedBot?.serviceType ?: "Unknown"
-    val mdnsHost = selectedBot?.hostName?.removeSuffix(".") ?: "Unknown"
-    val statusUrl = selectedBot?.let { "http://${it.host}:${it.port}/status" } ?: "Unknown"
-    val deviceTag = selectedBot?.txt?.get("device") ?: "Unknown"
 
     var isEditingName by remember(botStatus?.deviceName) { mutableStateOf(false) }
     var pendingName by remember(botStatus?.deviceName) { mutableStateOf(deviceName) }
@@ -1448,46 +1444,6 @@ private fun AdvancedOptionsScreen(
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = "IP Address : $ipAddress",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onBackground,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Service Type : $serviceType",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onBackground,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "mDNS Host : $mdnsHost",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onBackground,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Status URL : $statusUrl",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onBackground,
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Device Tag : $deviceTag",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = colors.onBackground,

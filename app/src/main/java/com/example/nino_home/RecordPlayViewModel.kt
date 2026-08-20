@@ -83,12 +83,8 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         this.bot = bot
         if (bot == null) {
             stopPolling()
-            _uiState.update {
-                it.copy(error = "No device connected. Open Record and Play from Home while a device is on Wi-Fi.")
-            }
-        } else {
-            _uiState.update { it.copy(error = null) }
         }
+        _uiState.update { it.copy(error = null) }
     }
 
     fun clearError() = _uiState.update { it.copy(error = null) }

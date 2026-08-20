@@ -70,6 +70,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.ActionFrame
+import com.example.nino_home.BotCardInfo
 import com.example.nino_home.BotService
 import com.example.nino_home.InsertMode
 import com.example.nino_home.MediaItem
@@ -79,30 +80,76 @@ import com.example.nino_home.ServoAction
 import com.example.nino_home.formatDurationSeconds
 
 private enum class RecordPlayPage {
+    SelectDevice,
     Actions,
     Editor,
     AutoCreate,
     Guide,
 }
 
+private fun botIdentity(bot: BotService) = "${bot.host}:${bot.port}"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordAndPlayScreen(
-    bot: BotService?,
+    discoveredBots: List<BotService>,
+    botCardInfo: Map<String, BotCardInfo>,
     onBack: () -> Unit,
     viewModel: RecordPlayViewModel = viewModel(),
 ) {
     val colors = MaterialTheme.colorScheme
     val uiState by viewModel.uiState.collectAsState()
-    var page by rememberSaveable { mutableStateOf(RecordPlayPage.Actions) }
+    var selectedBotKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var page by rememberSaveable {
+        mutableStateOf(
+            if (discoveredBots.size > 1) RecordPlayPage.SelectDevice else RecordPlayPage.Actions,
+        )
+    }
     var renameTarget by remember { mutableStateOf<ServoAction?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ServoAction?>(null) }
     var editorMenuExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(bot) {
-        viewModel.bindBot(bot)
+    val selectedBot = discoveredBots.firstOrNull { botIdentity(it) == selectedBotKey }
+
+    LaunchedEffect(discoveredBots) {
+        val keys = discoveredBots.map(::botIdentity)
+        when {
+            discoveredBots.isEmpty() -> {
+                selectedBotKey = null
+                page = RecordPlayPage.SelectDevice
+            }
+            discoveredBots.size == 1 -> {
+                selectedBotKey = keys.first()
+                if (page == RecordPlayPage.SelectDevice) {
+                    page = RecordPlayPage.Actions
+                }
+            }
+            selectedBotKey == null || selectedBotKey !in keys -> {
+                if (selectedBotKey != null) {
+                    if (uiState.isRecording) viewModel.leaveRecordMode()
+                    if (uiState.isPlaying) viewModel.stopPlay()
+                }
+                selectedBotKey = null
+                page = RecordPlayPage.SelectDevice
+            }
+        }
+    }
+
+    LaunchedEffect(selectedBot) {
+        viewModel.bindBot(selectedBot)
         viewModel.refreshActions()
+    }
+
+    fun goBackFromActions() {
+        if (uiState.isRecording) viewModel.leaveRecordMode()
+        if (uiState.isPlaying) viewModel.stopPlay()
+        if (discoveredBots.size > 1) {
+            selectedBotKey = null
+            page = RecordPlayPage.SelectDevice
+        } else {
+            onBack()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -126,10 +173,8 @@ fun RecordAndPlayScreen(
                 page = RecordPlayPage.Actions
                 viewModel.refreshActions()
             }
-            else -> {
-                if (uiState.isRecording) viewModel.leaveRecordMode()
-                onBack()
-            }
+            page == RecordPlayPage.Actions -> goBackFromActions()
+            else -> onBack()
         }
     }
 
@@ -140,6 +185,7 @@ fun RecordAndPlayScreen(
                 title = {
                     Text(
                         text = when (page) {
+                            RecordPlayPage.SelectDevice -> "Choose Device"
                             RecordPlayPage.Actions -> "Actions"
                             RecordPlayPage.Editor -> "Action Editor"
                             RecordPlayPage.AutoCreate -> "Auto action creation"
@@ -159,10 +205,8 @@ fun RecordAndPlayScreen(
                                     page = RecordPlayPage.Actions
                                     viewModel.refreshActions()
                                 }
-                                RecordPlayPage.Actions -> {
-                                    if (uiState.isRecording) viewModel.leaveRecordMode()
-                                    onBack()
-                                }
+                                RecordPlayPage.Actions -> goBackFromActions()
+                                RecordPlayPage.SelectDevice -> onBack()
                             }
                         },
                     ) {
@@ -229,13 +273,26 @@ fun RecordAndPlayScreen(
         },
     ) { padding ->
         when (page) {
+            RecordPlayPage.SelectDevice -> SelectDevicePage(
+                contentPadding = padding,
+                discoveredBots = discoveredBots,
+                botCardInfo = botCardInfo,
+                onSelect = { bot ->
+                    selectedBotKey = botIdentity(bot)
+                    page = RecordPlayPage.Actions
+                },
+            )
+
             RecordPlayPage.Actions -> ActionsListPage(
                 contentPadding = padding,
-                bot = bot,
+                bot = selectedBot,
+                botCardInfo = botCardInfo,
+                canChangeDevice = discoveredBots.size > 1,
                 actions = uiState.actions,
                 isPlaying = uiState.isPlaying,
                 statusMessage = uiState.statusMessage,
                 error = uiState.error,
+                onChangeDevice = { goBackFromActions() },
                 onNewAction = {
                     viewModel.startNewAction()
                     page = RecordPlayPage.Editor
@@ -256,7 +313,7 @@ fun RecordAndPlayScreen(
 
             RecordPlayPage.Editor -> ActionEditorPage(
                 contentPadding = padding,
-                bot = bot,
+                bot = selectedBot,
                 actionName = uiState.actionName,
                 motors = uiState.motors,
                 frames = uiState.frames,
@@ -412,20 +469,11 @@ fun RecordAndPlayScreen(
 }
 
 @Composable
-private fun ActionsListPage(
+private fun SelectDevicePage(
     contentPadding: PaddingValues,
-    bot: BotService?,
-    actions: List<ServoAction>,
-    isPlaying: Boolean,
-    statusMessage: String?,
-    error: String?,
-    onNewAction: () -> Unit,
-    onPlay: (ServoAction) -> Unit,
-    onStopPlay: () -> Unit,
-    onEdit: (ServoAction) -> Unit,
-    onRename: (ServoAction) -> Unit,
-    onDelete: (ServoAction) -> Unit,
-    onClearError: () -> Unit,
+    discoveredBots: List<BotService>,
+    botCardInfo: Map<String, BotCardInfo>,
+    onSelect: (BotService) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     Column(
@@ -435,6 +483,101 @@ private fun ActionsListPage(
             .padding(horizontal = 20.dp, vertical = 16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
+        Text(
+            text = if (discoveredBots.isEmpty()) {
+                "No devices online. Make sure a bot is on the same Wi-Fi, then come back."
+            } else {
+                "Choose which device to record and play on."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onBackground.copy(alpha = 0.75f),
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        discoveredBots.forEach { bot ->
+            val name = botCardInfo[botIdentity(bot)]?.deviceName ?: bot.serviceName
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onSelect(bot) },
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = colors.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = bot.host,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurface.copy(alpha = 0.7f),
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Online",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.primary,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun ActionsListPage(
+    contentPadding: PaddingValues,
+    bot: BotService?,
+    botCardInfo: Map<String, BotCardInfo>,
+    canChangeDevice: Boolean,
+    actions: List<ServoAction>,
+    isPlaying: Boolean,
+    statusMessage: String?,
+    error: String?,
+    onChangeDevice: () -> Unit,
+    onNewAction: () -> Unit,
+    onPlay: (ServoAction) -> Unit,
+    onStopPlay: () -> Unit,
+    onEdit: (ServoAction) -> Unit,
+    onRename: (ServoAction) -> Unit,
+    onDelete: (ServoAction) -> Unit,
+    onClearError: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val deviceLabel = bot?.let { botCardInfo[botIdentity(it)]?.deviceName ?: it.serviceName }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(contentPadding)
+            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        if (deviceLabel != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = deviceLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onBackground,
+                    modifier = Modifier.weight(1f),
+                )
+                if (canChangeDevice) {
+                    TextButton(onClick = onChangeDevice) {
+                        Text("Change")
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         Text(
             text = "Record & Play motor actions on the bot.",
             style = MaterialTheme.typography.bodyMedium,
@@ -707,8 +850,8 @@ private fun ActionEditorPage(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MotorChip("Tilt", motors == MotorSelection.Tilt) { onMotorsChange(MotorSelection.Tilt) }
-            MotorChip("Pan", motors == MotorSelection.Pan) { onMotorsChange(MotorSelection.Pan) }
+            MotorChip("Lift", motors == MotorSelection.Tilt) { onMotorsChange(MotorSelection.Tilt) }
+            MotorChip("Turn", motors == MotorSelection.Pan) { onMotorsChange(MotorSelection.Pan) }
             MotorChip("Both", motors == MotorSelection.Both) { onMotorsChange(MotorSelection.Both) }
         }
 
@@ -806,8 +949,8 @@ private fun ActionEditorPage(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Text("Tilt (ID1): ${tiltLive ?: "—"}")
-                Text("Pan (ID2): ${panLive ?: "—"}")
+                Text("Lift (ID1): ${tiltLive ?: "—"}")
+                Text("Turn (ID2): ${panLive ?: "—"}")
                 Spacer(modifier = Modifier.height(10.dp))
                 if (!isRecording) {
                     Button(
@@ -904,7 +1047,7 @@ private fun ActionEditorPage(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     selectedFrame.pose.positions.toSortedMap().forEach { (id, pos) ->
-                        val label = if (id == 1) "Tilt" else if (id == 2) "Pan" else "ID$id"
+                        val label = if (id == 1) "Lift" else if (id == 2) "Turn" else "ID$id"
                         Text("$label: $pos")
                     }
                     Spacer(modifier = Modifier.height(10.dp))
@@ -1073,7 +1216,7 @@ private fun AutoCreateActionPage(
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Tilt 510–550 · Pan 400–600 · motors start at neutral",
+            text = "Lift 510–550 · Turn 400–600 · motors start at neutral",
             style = MaterialTheme.typography.bodySmall,
             color = colors.onBackground.copy(alpha = 0.6f),
         )
@@ -1348,7 +1491,7 @@ private fun RecordPlayGuidePage(
         )
         GuideSection(
             title = "Key ideas",
-            body = "Frame = one snapshot of Tilt (ID1) and/or Pan (ID2) plus hold time.\n" +
+            body = "Frame = one snapshot of Lift (ID1) and/or Turn (ID2) plus hold time.\n" +
                 "Action = ordered list of frames played in order.\n" +
                 "Neutral = center pose 512 for both motors.\n" +
                 "Actions are saved on the phone; the bot receives frames only when you Play.",
@@ -1371,7 +1514,7 @@ private fun RecordPlayGuidePage(
         GuideSection(
             title = "Create an action (step by step)",
             body = "1. Tap Create an action and enter a name.\n" +
-                "2. Choose motors: Tilt, Pan, or Both.\n" +
+                "2. Choose motors: Lift, Turn, or Both.\n" +
                 "3. Tap Enter Record Mode.\n" +
                 "   Motors automatically move to Neutral (512), then torque turns off for hand teaching.\n" +
                 "4. Move the head by hand, then tap Add Frame. Repeat.\n" +
@@ -1384,12 +1527,12 @@ private fun RecordPlayGuidePage(
         GuideSection(
             title = "Action Editor controls",
             body = "Action name — required before Save.\n" +
-                "Tilt / Pan / Both — which motors to capture and move.\n" +
+                "Lift / Turn / Both — which motors to capture and move.\n" +
                 "Audio — optional clip from My Music → Media; shows audio duration next to action duration.\n" +
                 "Enter Record Mode — go to neutral 512, then enable hand teach + live angles.\n" +
                 "Leave Record Mode — stop teaching mode and restore normal torque behavior.\n" +
                 "Neutral — send selected motors to 512 anytime.\n" +
-                "Live positions — current Tilt/Pan readout while recording.\n" +
+                "Live positions — current Lift/Turn readout while recording.\n" +
                 "Frame strip (F0, F1…) — tap to select a frame.\n" +
                 "Hold -100 / +100 / 500 / 0 — edit hold time for the selected frame.\n" +
                 "Add Frame — append current live pose.\n" +
