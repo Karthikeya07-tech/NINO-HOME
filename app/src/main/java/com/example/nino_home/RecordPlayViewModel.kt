@@ -1,8 +1,11 @@
 package com.example.nino_home
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.nino_home.audio.AudioPcmDecoder
+import com.example.nino_home.audio.PlayWavFeed
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -73,8 +76,18 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private val repository = ServoActionRepository(application)
-    private val _uiState = MutableStateFlow(RecordPlayUiState(actions = repository.loadActions()))
+    private val localMedia = LocalMediaRepository(application)
+    private val _uiState = MutableStateFlow(
+        RecordPlayUiState(
+            actions = repository.loadActions(),
+            mediaItems = MediaLibrary.all(localMedia.load()),
+        ),
+    )
     val uiState: StateFlow<RecordPlayUiState> = _uiState.asStateFlow()
+
+    private fun mediaCatalog(): List<MediaItem> = MediaLibrary.all(localMedia.load())
+
+    private fun findMedia(id: String?): MediaItem? = MediaLibrary.findById(id, localMedia.load())
 
     private var bot: BotService? = null
     private var pollJob: Job? = null
@@ -92,7 +105,12 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
     fun clearStatus() = _uiState.update { it.copy(statusMessage = null) }
 
     fun refreshActions() {
-        _uiState.update { it.copy(actions = repository.loadActions()) }
+        _uiState.update {
+            it.copy(
+                actions = repository.loadActions(),
+                mediaItems = mediaCatalog(),
+            )
+        }
     }
 
     fun startNewAction() {
@@ -106,7 +124,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                 selectedAudioId = null,
                 selectedAudioName = null,
                 selectedAudioDurationMs = null,
-                mediaItems = MediaLibrary.all(),
+                mediaItems = mediaCatalog(),
                 statusMessage = "Move the head, then tap Add Frame.",
                 error = null,
             )
@@ -114,7 +132,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun openActionForEdit(action: ServoAction) {
-        val media = MediaLibrary.findById(action.audioId)
+        val media = findMedia(action.audioId)
         _uiState.update {
             it.copy(
                 editingActionId = action.id,
@@ -125,7 +143,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                 selectedAudioId = action.audioId,
                 selectedAudioName = media?.name ?: action.audioName,
                 selectedAudioDurationMs = media?.durationMs ?: action.audioDurationMs,
-                mediaItems = MediaLibrary.all(),
+                mediaItems = mediaCatalog(),
                 statusMessage = "Editing “${action.name}”",
                 error = null,
             )
@@ -163,7 +181,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
                 autoAudioName = null,
                 autoAudioDurationMs = null,
                 pendingAutoAction = null,
-                mediaItems = MediaLibrary.all(),
+                mediaItems = mediaCatalog(),
                 error = null,
                 statusMessage = null,
             )
@@ -538,7 +556,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun playAction(action: ServoAction) {
+    fun playAction(action: ServoAction, includeAudio: Boolean = true) {
         val target = bot ?: return missingBot()
         if (action.frames.isEmpty()) {
             _uiState.update { it.copy(error = "Action has no frames") }
@@ -554,7 +572,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.update {
                 it.copy(isBusy = true, isPlaying = true, error = null, statusMessage = status)
             }
-            val result = runCatching { playActionWithLinkedAudio(target, action) }
+            val result = runCatching { playActionWithLinkedAudio(target, action, includeAudio) }
             result.fold(
                 onSuccess = {
                     _uiState.update {
@@ -649,6 +667,7 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
 
     fun stopPlay() {
         val target = bot ?: return
+        PlayWavFeed.cancel()
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { postPlayStop(target) }
             _uiState.update { it.copy(isPlaying = false, isBusy = false, statusMessage = "Play stopped") }
@@ -847,9 +866,13 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         postJson(url, body)
     }
 
-    private suspend fun playActionWithLinkedAudio(bot: BotService, action: ServoAction) {
+    private suspend fun playActionWithLinkedAudio(
+        bot: BotService,
+        action: ServoAction,
+        includeAudio: Boolean,
+    ) {
         coroutineScope {
-            val media = MediaLibrary.findById(action.audioId)
+            val media = if (includeAudio) findMedia(action.audioId) else null
             val audioDeferred = media?.let { item ->
                 // Start audio immediately so it overlaps with motor playback.
                 async { runCatching { startMediaAudio(bot, item) } }
@@ -865,9 +888,20 @@ class RecordPlayViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun startMediaAudio(bot: BotService, media: MediaItem) {
+    private suspend fun startMediaAudio(bot: BotService, media: MediaItem) {
         when (media.kind) {
             MediaKind.Demo -> postDemo(bot)
+            MediaKind.Local -> {
+                val uri = media.uri?.let(Uri::parse)
+                    ?: throw IOException("Local audio is missing a file")
+                val pcm = AudioPcmDecoder.decodeTo16kMonoPcm(getApplication(), uri).pcm
+                PlayWavFeed.stream(
+                    bot = bot,
+                    pcm = pcm,
+                    startPcmOffset = 0,
+                    onPlayhead = {},
+                )
+            }
         }
     }
 

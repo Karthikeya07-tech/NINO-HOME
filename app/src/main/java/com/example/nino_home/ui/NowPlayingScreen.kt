@@ -1,6 +1,8 @@
 package com.example.nino_home.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -64,12 +66,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.nino_home.BotService
 import com.example.nino_home.BotStatus
 import com.example.nino_home.MediaItem
-import com.example.nino_home.MediaLibrary
+import com.example.nino_home.MusicStreamViewModel
 import com.example.nino_home.R
 import com.example.nino_home.RecordPlayViewModel
 import com.example.nino_home.ServoAction
 import com.example.nino_home.ServoActionRepository
 import com.example.nino_home.formatDurationSeconds
+import com.example.nino_home.formatPlaybackClock
 import kotlin.math.roundToInt
 
 private enum class PlayerTab(val title: String) {
@@ -86,15 +89,16 @@ fun NowPlayingScreen(
     onVolumeChange: (Int) -> Unit,
     onBack: () -> Unit,
     onGoHome: () -> Unit,
+    musicViewModel: MusicStreamViewModel,
 ) {
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
     val actionRepository = remember { ServoActionRepository(context) }
     val recordPlayViewModel: RecordPlayViewModel = viewModel()
     val recordPlayUi by recordPlayViewModel.uiState.collectAsState()
+    val musicUi by musicViewModel.uiState.collectAsState()
     // null = show the Now Playing player (entry state from bot tap)
     var selectedTab by remember { mutableStateOf<PlayerTab?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
     var volume by remember(botStatus?.volume) {
         mutableStateOf((botStatus?.volume ?: 50).coerceIn(0, 100))
     }
@@ -106,6 +110,7 @@ fun NowPlayingScreen(
 
     LaunchedEffect(selectedBot) {
         recordPlayViewModel.bindBot(selectedBot)
+        musicViewModel.bindBot(selectedBot)
     }
 
     LaunchedEffect(selectedTab) {
@@ -171,21 +176,37 @@ fun NowPlayingScreen(
         ) {
             when (selectedTab) {
                 null -> PlayerMainPanel(
-                    isPlaying = isPlaying,
+                    title = musicUi.title,
+                    statusLabel = musicUi.statusLabel,
+                    isPlaying = musicUi.isPlaying,
+                    positionMs = musicUi.positionMs,
+                    durationMs = musicUi.durationMs,
+                    error = musicUi.error,
                     volume = volume,
                     onVolumeChange = {
                         volume = it
                         onVolumeChange(it)
                     },
-                    onTogglePlay = { isPlaying = !isPlaying },
+                    onTogglePlay = { musicViewModel.togglePlayPause() },
+                    onClearError = musicViewModel::clearError,
                     modifier = Modifier.weight(1f),
                 )
                 PlayerTab.Media -> LocalContentPanel(
                     deviceName = deviceName,
-                    mediaItems = MediaLibrary.all(),
+                    mediaItems = musicUi.mediaItems,
                     onPlayMedia = { item ->
-                        isPlaying = true
-                        recordPlayViewModel.playMedia(item)
+                        musicViewModel.playMedia(item)
+                        recordPlayViewModel.refreshActions()
+                        val mapped = recordPlayUi.actions.firstOrNull {
+                            it.audioId == item.id && it.frames.isNotEmpty()
+                        }
+                        if (mapped != null) {
+                            recordPlayViewModel.playAction(mapped, includeAudio = false)
+                        }
+                        selectedTab = null
+                    },
+                    onPickFromPhone = { uri ->
+                        musicViewModel.importFromUri(uri, playNow = true)
                         selectedTab = null
                     },
                     modifier = Modifier.weight(1f),
@@ -193,7 +214,13 @@ fun NowPlayingScreen(
                 PlayerTab.Actions -> SavedActionsPanel(
                     actions = recordPlayUi.actions.ifEmpty { actionRepository.loadActions() },
                     onActionTap = { action ->
-                        recordPlayViewModel.playAction(action)
+                        val media = musicUi.mediaItems.firstOrNull { it.id == action.audioId }
+                        if (media != null) {
+                            musicViewModel.playMedia(media)
+                            recordPlayViewModel.playAction(action, includeAudio = false)
+                        } else {
+                            recordPlayViewModel.playAction(action)
+                        }
                     },
                     modifier = Modifier.weight(1f),
                 )
@@ -211,9 +238,15 @@ private fun LocalContentPanel(
     deviceName: String,
     mediaItems: List<MediaItem>,
     onPlayMedia: (MediaItem) -> Unit,
+    onPickFromPhone: (android.net.Uri) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val pickAudio = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let(onPickFromPhone)
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -233,6 +266,44 @@ private fun LocalContentPanel(
             color = colors.onBackground.copy(alpha = 0.6f),
         )
         Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    pickAudio.launch(arrayOf("audio/*"))
+                }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.primary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "+",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colors.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Pick from phone",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.onBackground,
+                )
+                Text(
+                    text = "Pick audio — app converts and streams to the device",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onBackground.copy(alpha = 0.55f),
+                )
+            }
+        }
         HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -294,13 +365,24 @@ private fun LocalContentPanel(
 
 @Composable
 private fun PlayerMainPanel(
+    title: String,
+    statusLabel: String,
     isPlaying: Boolean,
+    positionMs: Int,
+    durationMs: Int,
+    error: String?,
     volume: Int,
     onVolumeChange: (Int) -> Unit,
     onTogglePlay: () -> Unit,
+    onClearError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    val progress = if (durationMs > 0) {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -321,6 +403,34 @@ private fun PlayerMainPanel(
                 contentScale = ContentScale.Fit,
             )
 
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.Black,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = statusLabel,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.Black.copy(alpha = 0.65f),
+            )
+            if (error != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onClearError),
+                )
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -330,16 +440,8 @@ private fun PlayerMainPanel(
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(if (isPlaying) 0.12f else 0f)
+                        .fillMaxWidth(progress)
                         .height(4.dp)
-                        .background(colors.primary),
-                )
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = if (isPlaying) 24.dp else 0.dp)
-                        .size(12.dp)
-                        .clip(CircleShape)
                         .background(colors.primary),
                 )
             }
@@ -348,8 +450,16 @@ private fun PlayerMainPanel(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("0:00", style = MaterialTheme.typography.bodySmall, color = Color.Black)
-                Text("0:00", style = MaterialTheme.typography.bodySmall, color = Color.Black)
+                Text(
+                    text = formatPlaybackClock(positionMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Black,
+                )
+                Text(
+                    text = formatPlaybackClock(durationMs),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Black,
+                )
             }
         }
 

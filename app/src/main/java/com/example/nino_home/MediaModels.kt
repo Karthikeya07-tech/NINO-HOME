@@ -5,6 +5,7 @@ package com.example.nino_home
  */
 enum class MediaKind {
     Demo,
+    Local,
 }
 
 data class MediaItem(
@@ -14,24 +15,27 @@ data class MediaItem(
     /** Length in ms when known; null if the bot script length is not catalogued yet. */
     val durationMs: Int?,
     val kind: MediaKind,
+    /** Content URI for [MediaKind.Local] files picked from the phone. */
+    val uri: String? = null,
 )
 
 object MediaLibrary {
     const val DEMO_ID = "media_demo"
 
-    fun all(): List<MediaItem> = listOf(
+    fun builtIn(): List<MediaItem> = listOf(
         MediaItem(
             id = DEMO_ID,
             name = "Demo",
             description = "Built-in firmware script",
-            // Approximate; replace when the bot reports real media metadata.
             durationMs = 30_000,
             kind = MediaKind.Demo,
         ),
     )
 
-    fun findById(id: String?): MediaItem? =
-        id?.let { wanted -> all().find { it.id == wanted } }
+    fun all(local: List<MediaItem> = emptyList()): List<MediaItem> = builtIn() + local
+
+    fun findById(id: String?, local: List<MediaItem> = emptyList()): MediaItem? =
+        id?.let { wanted -> all(local).find { it.id == wanted } }
 }
 
 fun formatDurationSeconds(ms: Int?): String {
@@ -41,5 +45,18 @@ fun formatDurationSeconds(ms: Int?): String {
         "${seconds.toLong()} s"
     } else {
         "%.1f s".format(seconds)
+    }
+}
+
+fun formatPlaybackClock(ms: Int?): String {
+    if (ms == null || ms < 0) return "0:00"
+    val totalSeconds = ms / 1000
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
     }
 }

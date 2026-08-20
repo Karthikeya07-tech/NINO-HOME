@@ -103,6 +103,7 @@ import com.example.nino_home.BotService
 import com.example.nino_home.R
 import com.example.nino_home.BotStatus
 import com.example.nino_home.HomeViewModel
+import com.example.nino_home.MusicStreamViewModel
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -130,6 +131,7 @@ fun HomeScreen() {
     var showRecordAndPlay by rememberSaveable { mutableStateOf(false) }
     var showScenesMenu by remember { mutableStateOf(false) }
     val homeViewModel: HomeViewModel = viewModel()
+    val musicViewModel: MusicStreamViewModel = viewModel()
     val homeUiState by homeViewModel.uiState.collectAsState()
 
     LaunchedEffect(selectedTab) {
@@ -164,6 +166,7 @@ fun HomeScreen() {
         NowPlayingScreen(
             selectedBot = homeUiState.selectedBot,
             botStatus = homeUiState.botStatus,
+            musicViewModel = musicViewModel,
             onVolumeChange = { volume ->
                 homeUiState.selectedBot?.let { homeViewModel.setVolume(it, volume) }
             },
