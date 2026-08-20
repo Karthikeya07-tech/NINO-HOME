@@ -5,16 +5,15 @@ import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.nino_home.audio.PlayWavClient
 import com.example.nino_home.audio.PlayWavFeed
-import com.example.nino_home.audio.StreamingPcmDecoder
-import com.example.nino_home.audio.WavPcm
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
-import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -46,15 +45,46 @@ data class MusicPlayerUiState(
 )
 
 class MusicStreamViewModel(application: Application) : AndroidViewModel(application) {
+    companion object {
+        private const val TAG = "MusicStreamVM"
+    }
+
     private val localMedia = LocalMediaRepository(application)
     private val _uiState = MutableStateFlow(MusicPlayerUiState(mediaItems = catalog()))
     val uiState: StateFlow<MusicPlayerUiState> = _uiState.asStateFlow()
 
     private var bot: BotService? = null
-    private var feedJob: Job? = null
+    private var demoJob: Job? = null
     private var cachedItem: MediaItem? = null
-    private var cachedPcm: ByteArray? = null
-    private var playheadBytes: Int = 0
+    private var transportJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            MusicStreamService.state.collect { serviceState ->
+                val localSession = cachedItem?.kind == MediaKind.Local
+                if (!localSession && !serviceState.active) return@collect
+                if (serviceState.active ||
+                    serviceState.status == MusicPlaybackStatus.Playing ||
+                    serviceState.status == MusicPlaybackStatus.Preparing ||
+                    serviceState.status == MusicPlaybackStatus.Paused ||
+                    serviceState.status == MusicPlaybackStatus.Stopped
+                ) {
+                    _uiState.update {
+                        it.copy(
+                            title = serviceState.title.ifBlank { it.title },
+                            status = serviceState.status,
+                            statusLabel = serviceState.statusLabel,
+                            isPlaying = serviceState.isPlaying,
+                            positionMs = serviceState.positionMs,
+                            durationMs = serviceState.durationMs.takeIf { d -> d > 0 }
+                                ?: it.durationMs,
+                            error = serviceState.error,
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     fun bindBot(bot: BotService?) {
         this.bot = bot
@@ -98,52 +128,87 @@ class MusicStreamViewModel(application: Application) : AndroidViewModel(applicat
         }
         when (item.kind) {
             MediaKind.Demo -> playDemo(target, item)
-            MediaKind.Local -> playLocal(target, item, resume = false)
+            MediaKind.Local -> {
+                demoJob?.cancel()
+                cachedItem = item
+                MusicStreamService.play(
+                    context = getApplication(),
+                    bot = target,
+                    item = item,
+                    reset = true,
+                )
+            }
         }
     }
 
     fun togglePlayPause() {
         val state = _uiState.value
-        if (state.isPlaying) {
-            pause()
-            return
-        }
-        val item = cachedItem ?: state.mediaItems.firstOrNull { it.id == MediaLibrary.DEMO_ID }
-        if (item == null) {
-            _uiState.update { it.copy(error = "Pick a song from Media or from your phone.") }
-            return
-        }
-        val target = bot
-        if (target == null) {
-            _uiState.update { it.copy(error = "No device selected.") }
-            return
-        }
-        when (item.kind) {
-            MediaKind.Demo -> playDemo(target, item)
-            MediaKind.Local -> playLocal(target, item, resume = playheadBytes > 0)
+        when {
+            state.isPlaying && cachedItem?.kind == MediaKind.Local -> pauseLocalImmediate()
+            state.status == MusicPlaybackStatus.Paused && cachedItem?.kind == MediaKind.Local ->
+                resumeLocalImmediate()
+            state.isPlaying -> {
+                // Demo or unknown: stop local timer.
+                demoJob?.cancel()
+                _uiState.update {
+                    it.copy(
+                        isPlaying = false,
+                        status = MusicPlaybackStatus.Paused,
+                        statusLabel = "Paused",
+                    )
+                }
+            }
+            else -> {
+                val item = cachedItem ?: state.mediaItems.firstOrNull { it.id == MediaLibrary.DEMO_ID }
+                if (item == null) {
+                    _uiState.update { it.copy(error = "Pick a song from Media or from your phone.") }
+                    return
+                }
+                val target = bot
+                if (target == null) {
+                    _uiState.update { it.copy(error = "No device selected.") }
+                    return
+                }
+                when (item.kind) {
+                    MediaKind.Demo -> playDemo(target, item)
+                    MediaKind.Local -> {
+                        if (state.status == MusicPlaybackStatus.Paused) {
+                            resumeLocalImmediate()
+                        } else {
+                            MusicStreamService.play(
+                                context = getApplication(),
+                                bot = target,
+                                item = item,
+                                reset = true,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
     fun pause() {
-        PlayWavFeed.cancel()
-        feedJob?.cancel()
-        feedJob = null
-        val position = WavPcm.durationMsForPcmBytes(playheadBytes)
+        if (cachedItem?.kind == MediaKind.Local) {
+            pauseLocalImmediate()
+            return
+        }
+        demoJob?.cancel()
         _uiState.update {
             it.copy(
                 isPlaying = false,
                 status = MusicPlaybackStatus.Paused,
                 statusLabel = "Paused",
-                positionMs = position.coerceAtMost(it.durationMs),
             )
         }
     }
 
     fun stop() {
-        PlayWavFeed.cancel()
-        feedJob?.cancel()
-        feedJob = null
-        playheadBytes = 0
+        if (cachedItem?.kind == MediaKind.Local) {
+            stopLocalImmediate()
+            return
+        }
+        demoJob?.cancel()
         _uiState.update {
             it.copy(
                 isPlaying = false,
@@ -154,22 +219,100 @@ class MusicStreamViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    override fun onCleared() {
+    /**
+     * Firmware owns pause: stop POSTs and hit `/play_wav/pause` on IO
+     * immediately (do not wait for the service main-thread handler).
+     */
+    private fun pauseLocalImmediate() {
+        val target = bot
+        PlayWavFeed.pauseFeeding()
+        _uiState.update {
+            it.copy(
+                isPlaying = false,
+                status = MusicPlaybackStatus.Paused,
+                statusLabel = "Paused",
+            )
+        }
+        transportJob?.cancel()
+        transportJob = viewModelScope.launch(Dispatchers.IO) {
+            if (target != null) {
+                runCatching { PlayWavClient.pause(target) }
+                    .onFailure { err ->
+                        Log.e(TAG, "play_wav/pause failed", err)
+                        _uiState.update {
+                            it.copy(error = err.message ?: "Pause failed on device")
+                        }
+                    }
+            } else {
+                Log.e(TAG, "pause: no bot selected")
+            }
+            // Keep service notification / feed state in sync.
+            MusicStreamService.pause(getApplication())
+        }
+    }
+
+    private fun resumeLocalImmediate() {
+        val target = bot
+        _uiState.update {
+            it.copy(
+                isPlaying = true,
+                status = MusicPlaybackStatus.Playing,
+                statusLabel = "Playing on device",
+            )
+        }
+        transportJob?.cancel()
+        transportJob = viewModelScope.launch(Dispatchers.IO) {
+            if (target != null) {
+                runCatching { PlayWavClient.resume(target) }
+                    .onFailure { err ->
+                        Log.e(TAG, "play_wav/resume failed", err)
+                        _uiState.update {
+                            it.copy(error = err.message ?: "Resume failed on device")
+                        }
+                    }
+            }
+            PlayWavFeed.resumeFeeding()
+            MusicStreamService.resume(getApplication())
+        }
+    }
+
+    private fun stopLocalImmediate() {
+        val target = bot
         PlayWavFeed.cancel()
-        feedJob?.cancel()
+        PlayWavFeed.resetSliceStart()
+        _uiState.update {
+            it.copy(
+                isPlaying = false,
+                status = MusicPlaybackStatus.Stopped,
+                statusLabel = "Stopped",
+                positionMs = 0,
+            )
+        }
+        transportJob?.cancel()
+        transportJob = viewModelScope.launch(Dispatchers.IO) {
+            if (target != null) {
+                runCatching { PlayWavClient.stop(target) }
+                    .onFailure { err -> Log.e(TAG, "play_wav/stop failed", err) }
+            }
+            MusicStreamService.stop(getApplication())
+        }
+    }
+
+    override fun onCleared() {
+        // Do not stop the foreground stream when leaving the screen —
+        // wifi stream.md requires POSTs to continue in the background.
+        demoJob?.cancel()
         super.onCleared()
     }
 
     private fun catalog(): List<MediaItem> = MediaLibrary.all(localMedia.load())
 
     private fun playDemo(bot: BotService, item: MediaItem) {
-        PlayWavFeed.cancel()
-        feedJob?.cancel()
+        MusicStreamService.stop(getApplication())
+        demoJob?.cancel()
         cachedItem = item
-        cachedPcm = null
-        playheadBytes = 0
         val duration = item.durationMs ?: 30_000
-        feedJob = viewModelScope.launch(Dispatchers.IO) {
+        demoJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     title = item.name,
@@ -207,111 +350,6 @@ class MusicStreamViewModel(application: Application) : AndroidViewModel(applicat
                         status = MusicPlaybackStatus.Stopped,
                         statusLabel = "Finished",
                         positionMs = duration,
-                    )
-                }
-            }
-        }
-    }
-
-    private fun playLocal(bot: BotService, item: MediaItem, resume: Boolean) {
-        val uri = item.uri?.let(Uri::parse)
-        if (uri == null) {
-            _uiState.update { it.copy(error = "That song is missing a file path.") }
-            return
-        }
-        PlayWavFeed.cancel()
-        feedJob?.cancel()
-        cachedItem = item
-        if (!resume) {
-            playheadBytes = 0
-            cachedPcm = null
-        }
-        feedJob = viewModelScope.launch(Dispatchers.IO) {
-            val durationHint = item.durationMs ?: 0
-            _uiState.update {
-                it.copy(
-                    title = item.name,
-                    status = MusicPlaybackStatus.Preparing,
-                    statusLabel = "Starting…",
-                    isPlaying = true,
-                    positionMs = WavPcm.durationMsForPcmBytes(playheadBytes),
-                    durationMs = durationHint,
-                    error = null,
-                )
-            }
-            try {
-                val cached = cachedPcm
-                val completed = if (cached != null && cachedItem?.id == item.id) {
-                    val durationMs = WavPcm.durationMsForPcmBytes(cached.size)
-                    _uiState.update {
-                        it.copy(
-                            status = MusicPlaybackStatus.Playing,
-                            statusLabel = "Playing on device",
-                            durationMs = durationMs,
-                        )
-                    }
-                    PlayWavFeed.stream(
-                        bot = bot,
-                        pcm = cached,
-                        startPcmOffset = playheadBytes,
-                        onPlayhead = { offset ->
-                            playheadBytes = offset
-                            _uiState.update { state ->
-                                state.copy(
-                                    positionMs = WavPcm.durationMsForPcmBytes(offset)
-                                        .coerceAtMost(durationMs),
-                                )
-                            }
-                        },
-                    )
-                } else {
-                    StreamingPcmDecoder(getApplication(), uri).use { decoder ->
-                        val durationMs = decoder.durationMs.takeIf { it > 0 } ?: durationHint
-                        _uiState.update {
-                            it.copy(
-                                status = MusicPlaybackStatus.Playing,
-                                statusLabel = "Playing on device",
-                                durationMs = durationMs,
-                            )
-                        }
-                        PlayWavFeed.streamLive(
-                            bot = bot,
-                            decoder = decoder,
-                            startPcmOffset = playheadBytes,
-                            onPlayhead = { offset ->
-                                playheadBytes = offset
-                                _uiState.update { state ->
-                                    state.copy(
-                                        positionMs = WavPcm.durationMsForPcmBytes(offset)
-                                            .coerceAtMost(durationMs.coerceAtLeast(1)),
-                                    )
-                                }
-                            },
-                        )
-                    }
-                }
-                if (!isActive) return@launch
-                if (completed) {
-                    val endMs = _uiState.value.durationMs
-                    playheadBytes = 0
-                    _uiState.update {
-                        it.copy(
-                            isPlaying = false,
-                            status = MusicPlaybackStatus.Stopped,
-                            statusLabel = "Finished",
-                            positionMs = endMs,
-                        )
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isPlaying = false,
-                        status = MusicPlaybackStatus.Paused,
-                        statusLabel = "Paused",
-                        error = e.message ?: "Failed to send audio to the device",
                     )
                 }
             }

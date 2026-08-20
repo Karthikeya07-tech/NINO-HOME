@@ -2,130 +2,215 @@ package com.example.nino_home.audio
 
 import android.os.SystemClock
 import com.example.nino_home.BotService
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 
 /**
- * Pushes 16 kHz mono WAV clips to `/play_wav`.
+ * Pushes 16 kHz mono WAV clips to `/play_wav` with `X-Nino-Stream: 1`.
  *
- * Decodes the next clip first, then POSTs when the estimated robot queue is
- * down to ~[WavPcm.PRELOAD_LEAD_MS]. That overlaps decode with playback and
- * keeps about one clip queued to reduce gaps.
+ * Matches wifi stream.md:
+ * - Track [nextSliceStart] (advanced only after a successful POST).
+ * - Prefetch: first clip, then second immediately, then keep ~1 playing + 1 queued.
+ * - Pause is firmware-owned: [pauseFeeding] stops POSTs; do not re-send current clip.
  */
 object PlayWavFeed {
     private val session = AtomicInteger(0)
+    private val feedingPaused = AtomicBoolean(false)
+
+    /** PCM byte where the next POST should begin. */
+    @Volatile
+    var nextSliceStart: Int = 0
+        private set
 
     fun cancel() {
+        feedingPaused.set(false)
         session.incrementAndGet()
+    }
+
+    /** Stop POSTing further chunks (after /play_wav/pause). Keeps nextSliceStart. */
+    fun pauseFeeding() {
+        feedingPaused.set(true)
+    }
+
+    /** Allow POSTs again (after /play_wav/resume). Continues from nextSliceStart. */
+    fun resumeFeeding() {
+        feedingPaused.set(false)
+    }
+
+    fun resetSliceStart() {
+        nextSliceStart = 0
     }
 
     suspend fun stream(
         bot: BotService,
         pcm: ByteArray,
-        startPcmOffset: Int,
-        onPlayhead: (pcmOffset: Int) -> Unit,
+        startPcmOffset: Int = 0,
+        onPlayhead: (pcmOffset: Int) -> Unit = {},
     ): Boolean {
-        var offset = startPcmOffset.coerceIn(0, pcm.size) and 1.inv()
-        return feed(bot, onPlayhead, offset) { first ->
+        nextSliceStart = startPcmOffset.coerceIn(0, pcm.size) and 1.inv()
+        feedingPaused.set(false)
+        return feed(bot, onPlayhead) { first ->
+            val offset = nextSliceStart
             if (offset >= pcm.size) return@feed null
             val want = if (first) WavPcm.FIRST_CHUNK_PCM_BYTES else WavPcm.CHUNK_PCM_BYTES
             val slice = want.coerceAtMost(pcm.size - offset) and 1.inv()
             if (slice <= 0) return@feed null
-            val chunk = pcm.copyOfRange(offset, offset + slice)
-            offset += slice
-            chunk
+            pcm.copyOfRange(offset, offset + slice)
         }
     }
 
     suspend fun streamLive(
         bot: BotService,
         decoder: StreamingPcmDecoder,
-        startPcmOffset: Int,
-        onPlayhead: (pcmOffset: Int) -> Unit,
+        startPcmOffset: Int = 0,
+        onPlayhead: (pcmOffset: Int) -> Unit = {},
     ): Boolean {
         val start = startPcmOffset.coerceAtLeast(0) and 1.inv()
+        nextSliceStart = start
+        feedingPaused.set(false)
         if (start > 0) decoder.seekToPcmByte(start)
-        var offset = start
-        return feed(bot, onPlayhead, offset) { first ->
+        return feed(bot, onPlayhead) { first ->
             val want = if (first) WavPcm.FIRST_CHUNK_PCM_BYTES else WavPcm.CHUNK_PCM_BYTES
             val chunk = decoder.read(want)
-            if (chunk.isEmpty()) return@feed null
-            offset += chunk.size
-            chunk
+            if (chunk.isEmpty()) null else chunk
         }
     }
 
     private suspend fun feed(
         bot: BotService,
         onPlayhead: (pcmOffset: Int) -> Unit,
-        startingOffset: Int,
         nextPcm: suspend (first: Boolean) -> ByteArray?,
     ): Boolean {
         val id = session.incrementAndGet()
-        var pcmPlayhead = startingOffset and 1.inv()
-        onPlayhead(pcmPlayhead)
+        onPlayhead(nextSliceStart)
 
         var first = true
-        var queueEndAt = 0L
+        var clipsSent = 0
+        var lastPostAt = 0L
+        var lastChunkMs = 0
         var timelineOrigin = 0L
-        var pcmAtOrigin = startingOffset and 1.inv()
+        var pcmAtOrigin = nextSliceStart
 
         while (true) {
             coroutineContext.ensureActive()
             if (session.get() != id) return false
 
-            // Decode/prepare next clip while the robot is still playing.
+            // Firmware pause: do not send more until resumeFeeding().
+            while (feedingPaused.get()) {
+                coroutineContext.ensureActive()
+                if (session.get() != id) return false
+                delay(120)
+            }
+
+            // Prefetch pacing after the first two clips are already on the robot.
+            if (clipsSent >= 2) {
+                waitUntilRoomForNextClip(
+                    sessionId = id,
+                    bot = bot,
+                    lastPostAt = lastPostAt,
+                    lastChunkMs = lastChunkMs,
+                    timelineOrigin = timelineOrigin,
+                    pcmAtOrigin = pcmAtOrigin,
+                    postedEnd = nextSliceStart,
+                    onPlayhead = onPlayhead,
+                ) || return false
+            }
+
             val pcmChunk = nextPcm(first) ?: break
             first = false
             if (pcmChunk.isEmpty()) break
 
-            // Wait to send until the queue is near the preload lead.
-            if (queueEndAt > 0L) {
-                while (true) {
-                    coroutineContext.ensureActive()
-                    if (session.get() != id) return false
-                    val now = SystemClock.elapsedRealtime()
-                    val sendAt = queueEndAt - WavPcm.PRELOAD_LEAD_MS
-                    updatePlayhead(pcmAtOrigin, timelineOrigin, now, pcmPlayhead, onPlayhead)
-                    if (now >= sendAt) break
-                    delay(minOf(80L, (sendAt - now).coerceAtLeast(1L)))
-                }
+            if (session.get() != id) return false
+            while (feedingPaused.get()) {
+                coroutineContext.ensureActive()
+                if (session.get() != id) return false
+                delay(120)
             }
 
-            if (session.get() != id) return false
             PlayWavClient.postWav(bot, WavPcm.wrapPcm(pcmChunk))
+            nextSliceStart = (nextSliceStart + pcmChunk.size) and 1.inv()
 
             val chunkMs = WavPcm.durationMsForPcmBytes(pcmChunk.size)
             val now = SystemClock.elapsedRealtime()
-            if (queueEndAt == 0L) {
+            if (clipsSent == 0) {
                 timelineOrigin = now
-                pcmAtOrigin = pcmPlayhead
-                queueEndAt = now
+                pcmAtOrigin = nextSliceStart - pcmChunk.size
             }
-            if (queueEndAt < now) queueEndAt = now
-            queueEndAt += chunkMs
-            pcmPlayhead += pcmChunk.size
-            updatePlayhead(pcmAtOrigin, timelineOrigin, now, pcmPlayhead, onPlayhead)
+            lastPostAt = now
+            lastChunkMs = chunkMs
+            clipsSent++
+            updatePlayhead(pcmAtOrigin, timelineOrigin, now, nextSliceStart, onPlayhead)
+
+            // Clip #2 goes immediately (1 playing + 1 queued).
+            if (clipsSent == 1) continue
         }
 
-        while (session.get() == id) {
-            coroutineContext.ensureActive()
-            val now = SystemClock.elapsedRealtime()
-            updatePlayhead(pcmAtOrigin, timelineOrigin, now, pcmPlayhead, onPlayhead)
-            if (queueEndAt == 0L || now >= queueEndAt) break
-            delay(100)
+        // Drain UI playhead for audio already queued on the robot.
+        if (clipsSent > 0 && timelineOrigin > 0L) {
+            val endAt = lastPostAt + lastChunkMs
+            while (session.get() == id && !feedingPaused.get()) {
+                coroutineContext.ensureActive()
+                val now = SystemClock.elapsedRealtime()
+                updatePlayhead(pcmAtOrigin, timelineOrigin, now, nextSliceStart, onPlayhead)
+                if (now >= endAt) break
+                delay(100)
+            }
         }
-        onPlayhead(pcmPlayhead)
-        return session.get() == id
+        onPlayhead(nextSliceStart)
+        return session.get() == id && !feedingPaused.get()
+    }
+
+    /**
+     * Wait until status.queued is 0/1, or ~chunkDuration − 1.5 s since last POST.
+     */
+    private suspend fun waitUntilRoomForNextClip(
+        sessionId: Int,
+        bot: BotService,
+        lastPostAt: Long,
+        lastChunkMs: Int,
+        timelineOrigin: Long,
+        pcmAtOrigin: Int,
+        postedEnd: Int,
+        onPlayhead: (pcmOffset: Int) -> Unit,
+    ): Boolean {
+        val durationGate = (lastChunkMs - WavPcm.PRELOAD_LEAD_MS).coerceAtLeast(50)
+        while (true) {
+            coroutineContext.ensureActive()
+            if (session.get() != sessionId) return false
+            while (feedingPaused.get()) {
+                coroutineContext.ensureActive()
+                if (session.get() != sessionId) return false
+                delay(120)
+            }
+
+            val now = SystemClock.elapsedRealtime()
+            updatePlayhead(pcmAtOrigin, timelineOrigin, now, postedEnd, onPlayhead)
+
+            val elapsed = (now - lastPostAt).toInt()
+            if (elapsed >= durationGate) return true
+
+            val status = runCatching { PlayWavClient.status(bot) }.getOrNull()
+            if (status != null) {
+                if (status.paused) {
+                    // Mirror firmware pause if UI somehow missed it.
+                    feedingPaused.set(true)
+                    continue
+                }
+                if (status.queued <= 1) return true
+            }
+
+            delay(120)
+        }
     }
 
     private fun updatePlayhead(
         pcmAtOrigin: Int,
         timelineOrigin: Long,
         now: Long,
-        postedPcmEnd: Int,
+        postedEnd: Int,
         onPlayhead: (pcmOffset: Int) -> Unit,
     ) {
         if (timelineOrigin == 0L) {
@@ -134,6 +219,6 @@ object PlayWavFeed {
         }
         val elapsed = (now - timelineOrigin).coerceAtLeast(0L).toInt()
         val timed = pcmAtOrigin + (WavPcm.pcmBytesForDurationMs(elapsed) and 1.inv())
-        onPlayhead(timed.coerceAtMost(postedPcmEnd))
+        onPlayhead(timed.coerceAtMost(postedEnd))
     }
 }

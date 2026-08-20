@@ -22,10 +22,10 @@ object WavPcm {
     const val MAX_POST_BYTES = 380 * 1024
 
     /**
-     * Send the next clip this many ms before the current clip is estimated
-     * to finish, so the robot always has ~1 clip queued (reduces gaps).
+     * Send the next clip this many ms before the previous clip is estimated
+     * to finish (~chunk duration − 1.5 s per wifi stream.md).
      */
-    const val PRELOAD_LEAD_MS = 1_800
+    const val PRELOAD_LEAD_MS = 1_500
 
     fun durationMsForPcmBytes(pcmBytes: Int): Int {
         if (pcmBytes <= 0) return 0
