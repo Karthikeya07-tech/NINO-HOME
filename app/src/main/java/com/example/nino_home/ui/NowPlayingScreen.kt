@@ -40,14 +40,19 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.view.KeyEvent
+import com.example.nino_home.VolumeKeyDispatcher
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -102,10 +107,52 @@ fun NowPlayingScreen(
     var volume by remember(botStatus?.volume) {
         mutableStateOf((botStatus?.volume ?: 50).coerceIn(0, 100))
     }
+    var volumeBeforeMute by remember { mutableIntStateOf((botStatus?.volume ?: 50).coerceIn(5, 100)) }
     val deviceName = botStatus?.deviceName ?: selectedBot?.serviceName ?: "Device"
 
+    fun applyVolume(next: Int) {
+        val clamped = next.coerceIn(0, 100)
+        if (clamped > 0) volumeBeforeMute = clamped
+        volume = clamped
+        onVolumeChange(clamped)
+    }
+
+    val volumeLatest = rememberUpdatedState(volume)
+    val beforeMuteLatest = rememberUpdatedState(volumeBeforeMute)
+    val applyVolumeLatest = rememberUpdatedState<(Int) -> Unit>(::applyVolume)
+
     LaunchedEffect(botStatus?.volume) {
-        botStatus?.volume?.takeIf { it in 0..100 }?.let { volume = it }
+        botStatus?.volume?.takeIf { it in 0..100 }?.let {
+            volume = it
+            if (it > 0) volumeBeforeMute = it
+        }
+    }
+
+    DisposableEffect(Unit) {
+        VolumeKeyDispatcher.handler = handler@{ keyCode, action ->
+            if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_MULTIPLE) {
+                return@handler true
+            }
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    applyVolumeLatest.value(volumeLatest.value + 5)
+                    true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    applyVolumeLatest.value(volumeLatest.value - 5)
+                    true
+                }
+                KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    val current = volumeLatest.value
+                    applyVolumeLatest.value(
+                        if (current > 0) 0 else beforeMuteLatest.value.coerceAtLeast(5),
+                    )
+                    true
+                }
+                else -> false
+            }
+        }
+        onDispose { VolumeKeyDispatcher.handler = null }
     }
 
     LaunchedEffect(selectedBot) {
@@ -183,11 +230,12 @@ fun NowPlayingScreen(
                     durationMs = musicUi.durationMs,
                     error = musicUi.error,
                     volume = volume,
-                    onVolumeChange = {
-                        volume = it
-                        onVolumeChange(it)
+                    onVolumeChange = { applyVolume(it) },
+                    onToggleMute = {
+                        if (volume > 0) applyVolume(0) else applyVolume(volumeBeforeMute.coerceAtLeast(5))
                     },
                     onTogglePlay = { musicViewModel.togglePlayPause() },
+                    onSeek = { positionMs -> musicViewModel.seekTo(positionMs) },
                     onClearError = musicViewModel::clearError,
                     modifier = Modifier.weight(1f),
                 )
@@ -297,11 +345,6 @@ private fun LocalContentPanel(
                     fontWeight = FontWeight.SemiBold,
                     color = colors.onBackground,
                 )
-                Text(
-                    text = "Pick audio — app converts and streams to the device",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.onBackground.copy(alpha = 0.55f),
-                )
             }
         }
         HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
@@ -373,15 +416,25 @@ private fun PlayerMainPanel(
     error: String?,
     volume: Int,
     onVolumeChange: (Int) -> Unit,
+    onToggleMute: () -> Unit,
     onTogglePlay: () -> Unit,
+    onSeek: (Int) -> Unit,
     onClearError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
+    var scrubMs by remember { mutableStateOf<Int?>(null) }
+    val displayMs = scrubMs ?: positionMs
     val progress = if (durationMs > 0) {
-        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        (displayMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
     } else {
         0f
+    }
+
+    fun seekFromX(x: Float, width: Float) {
+        if (durationMs <= 0 || width <= 0f) return
+        val frac = (x / width).coerceIn(0f, 1f)
+        scrubMs = (frac * durationMs).roundToInt()
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -434,16 +487,59 @@ private fun PlayerMainPanel(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color(0xFFBDBDBD)),
+                    .height(28.dp)
+                    .pointerInput(durationMs) {
+                        detectTapGestures { offset ->
+                            if (durationMs <= 0) return@detectTapGestures
+                            val target = ((offset.x / size.width).coerceIn(0f, 1f) * durationMs)
+                                .roundToInt()
+                            scrubMs = null
+                            onSeek(target)
+                        }
+                    }
+                    .pointerInput(durationMs) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { offset -> seekFromX(offset.x, size.width.toFloat()) },
+                            onDragEnd = {
+                                val target = scrubMs
+                                scrubMs = null
+                                if (target != null) onSeek(target)
+                            },
+                            onDragCancel = { scrubMs = null },
+                            onHorizontalDrag = { change, _ ->
+                                seekFromX(change.position.x, size.width.toFloat())
+                            },
+                        )
+                    },
+                contentAlignment = Alignment.CenterStart,
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(progress)
+                        .fillMaxWidth()
                         .height(4.dp)
-                        .background(colors.primary),
-                )
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0xFFBDBDBD)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progress)
+                            .height(4.dp)
+                            .background(colors.primary),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress)
+                        .height(28.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clip(CircleShape)
+                            .background(colors.primary),
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -451,7 +547,7 @@ private fun PlayerMainPanel(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = formatPlaybackClock(positionMs),
+                    text = formatPlaybackClock(displayMs),
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Black,
                 )
@@ -503,7 +599,7 @@ private fun PlayerMainPanel(
                 },
                 modifier = Modifier
                     .size(width = 28.dp, height = 22.dp)
-                    .clickable { onVolumeChange(0) },
+                    .clickable(onClick = onToggleMute),
             )
             Spacer(modifier = Modifier.width(12.dp))
             PlayerVolumeBar(

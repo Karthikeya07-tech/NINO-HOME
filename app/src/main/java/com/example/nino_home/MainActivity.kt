@@ -1,6 +1,7 @@
 package com.example.nino_home
 
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -16,5 +17,10 @@ class MainActivity : ComponentActivity() {
                 HomeScreen()
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (VolumeKeyDispatcher.dispatch(event)) return true
+        return super.dispatchKeyEvent(event)
     }
 }

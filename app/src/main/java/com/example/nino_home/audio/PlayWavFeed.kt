@@ -44,6 +44,10 @@ object PlayWavFeed {
         nextSliceStart = 0
     }
 
+    fun setNextSliceStart(pcmBytes: Int) {
+        nextSliceStart = pcmBytes.coerceAtLeast(0) and 1.inv()
+    }
+
     suspend fun stream(
         bot: BotService,
         pcm: ByteArray,

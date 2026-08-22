@@ -97,6 +97,29 @@ class MusicStreamViewModel(application: Application) : AndroidViewModel(applicat
 
     fun clearError() = _uiState.update { it.copy(error = null) }
 
+    fun seekTo(positionMs: Int) {
+        val item = cachedItem
+        val target = bot
+        if (item?.kind != MediaKind.Local || item.uri == null || target == null) return
+        val duration = _uiState.value.durationMs.coerceAtLeast(0)
+        val clamped = positionMs.coerceIn(0, if (duration > 0) duration else positionMs)
+        _uiState.update {
+            it.copy(
+                positionMs = clamped,
+                status = MusicPlaybackStatus.Preparing,
+                statusLabel = "Seeking…",
+                isPlaying = true,
+                error = null,
+            )
+        }
+        MusicStreamService.seek(
+            context = getApplication(),
+            bot = target,
+            item = item,
+            positionMs = clamped,
+        )
+    }
+
     fun importFromUri(uri: Uri, playNow: Boolean = true) {
         val app = getApplication<Application>()
         runCatching {
@@ -131,6 +154,17 @@ class MusicStreamViewModel(application: Application) : AndroidViewModel(applicat
             MediaKind.Local -> {
                 demoJob?.cancel()
                 cachedItem = item
+                _uiState.update {
+                    it.copy(
+                        title = item.name,
+                        status = MusicPlaybackStatus.Preparing,
+                        statusLabel = "Starting…",
+                        isPlaying = true,
+                        positionMs = 0,
+                        durationMs = item.durationMs ?: it.durationMs,
+                        error = null,
+                    )
+                }
                 MusicStreamService.play(
                     context = getApplication(),
                     bot = target,

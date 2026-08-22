@@ -17,6 +17,7 @@ import com.example.nino_home.audio.PlayWavClient
 import com.example.nino_home.audio.PlayWavFeed
 import com.example.nino_home.audio.StreamingPcmDecoder
 import com.example.nino_home.audio.WavPcm
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,8 +27,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Keeps `/play_wav` chunk POSTs alive while the UI is backgrounded
@@ -36,6 +37,7 @@ import kotlinx.coroutines.launch
 class MusicStreamService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var feedJob: Job? = null
+    private val playGeneration = AtomicInteger(0)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +50,7 @@ class MusicStreamService : Service() {
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: "Song"
                 val durationMs = intent.getIntExtra(EXTRA_DURATION_MS, 0)
                 val reset = intent.getBooleanExtra(EXTRA_RESET, true)
+                val seekMs = intent.getIntExtra(EXTRA_SEEK_MS, -1)
                 startPlayback(
                     bot = BotService(
                         serviceName = title,
@@ -60,6 +63,7 @@ class MusicStreamService : Service() {
                     title = title,
                     durationMs = durationMs,
                     reset = reset,
+                    seekMs = seekMs.takeIf { it >= 0 },
                 )
             }
             ACTION_PAUSE -> pausePlayback()
@@ -71,6 +75,7 @@ class MusicStreamService : Service() {
     }
 
     override fun onDestroy() {
+        playGeneration.incrementAndGet()
         feedJob?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -82,98 +87,129 @@ class MusicStreamService : Service() {
         title: String,
         durationMs: Int,
         reset: Boolean,
+        seekMs: Int? = null,
     ) {
-        promoteForeground(title, "Playing on device", playing = true)
-
-        // New song: interrupt any prior feed and reset the slice cursor.
+        // Bump generation so any cancelled prior feed cannot update UI/errors.
+        val generation = playGeneration.incrementAndGet()
         PlayWavFeed.cancel()
         feedJob?.cancel()
-        if (reset) {
-            PlayWavFeed.resetSliceStart()
-            runCatching { PlayWavClient.stop(bot) }
+        feedJob = null
+
+        val startMs = when {
+            seekMs != null -> seekMs.coerceIn(0, durationMs.coerceAtLeast(0))
+            reset -> 0
+            else -> _state.value.positionMs
         }
 
+        promoteForeground(title, if (seekMs != null) "Seeking…" else "Starting…", playing = true)
         activeBot = bot
         _state.update {
             it.copy(
                 uri = uri.toString(),
                 title = title,
                 status = MusicPlaybackStatus.Preparing,
-                statusLabel = "Starting…",
+                statusLabel = if (seekMs != null) "Seeking…" else "Starting…",
                 isPlaying = true,
-                positionMs = if (reset) 0 else it.positionMs,
-                durationMs = durationMs,
+                positionMs = startMs,
+                durationMs = durationMs.takeIf { d -> d > 0 } ?: it.durationMs,
                 error = null,
                 active = true,
             )
         }
-        beginFeed(bot, uri, title, durationMs, reset)
+
+        // Stop robot queue, then stream from the chosen offset (seek is app-owned).
+        feedJob = scope.launch {
+            runCatching { PlayWavClient.stop(bot) }
+                .onFailure { Log.w("MusicStreamService", "stop before play/seek failed", it) }
+            if (playGeneration.get() != generation) return@launch
+
+            val pcmStart = WavPcm.pcmBytesForDurationMs(startMs) and 1.inv()
+            PlayWavFeed.setNextSliceStart(pcmStart)
+
+            beginFeed(
+                bot = bot,
+                uri = uri,
+                title = title,
+                durationMs = durationMs,
+                startPcmOffset = pcmStart,
+                generation = generation,
+            )
+        }
     }
 
-    private fun beginFeed(
+    private suspend fun beginFeed(
         bot: BotService,
         uri: Uri,
         title: String,
         durationMs: Int,
-        reset: Boolean,
+        startPcmOffset: Int,
+        generation: Int,
     ) {
-        feedJob?.cancel()
-        feedJob = scope.launch {
-            try {
-                StreamingPcmDecoder(applicationContext, uri).use { decoder ->
-                    val totalMs = decoder.durationMs.takeIf { it > 0 } ?: durationMs
-                    _state.update {
-                        it.copy(
-                            status = MusicPlaybackStatus.Playing,
-                            statusLabel = "Playing on device",
-                            durationMs = totalMs,
-                            isPlaying = true,
-                            active = true,
-                        )
-                    }
-                    updateNotification(title, "Playing on device", playing = true)
-
-                    val startOffset = if (reset) 0 else PlayWavFeed.nextSliceStart
-                    val completed = PlayWavFeed.streamLive(
-                        bot = bot,
-                        decoder = decoder,
-                        startPcmOffset = startOffset,
-                        onPlayhead = { offset ->
-                            _state.update { state ->
-                                state.copy(
-                                    positionMs = WavPcm.durationMsForPcmBytes(offset)
-                                        .coerceAtMost(totalMs.coerceAtLeast(1)),
-                                )
-                            }
-                        },
-                    )
-                    if (!isActive) return@launch
-                    if (completed) {
-                        _state.update {
-                            it.copy(
-                                isPlaying = false,
-                                status = MusicPlaybackStatus.Stopped,
-                                statusLabel = "Finished",
-                                positionMs = it.durationMs,
-                                active = false,
-                            )
-                        }
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
-                }
-            } catch (e: Exception) {
+        if (playGeneration.get() != generation) return
+        try {
+            StreamingPcmDecoder(applicationContext, uri).use { decoder ->
+                if (playGeneration.get() != generation) return
+                val totalMs = decoder.durationMs.takeIf { it > 0 } ?: durationMs
                 _state.update {
                     it.copy(
-                        isPlaying = false,
-                        status = MusicPlaybackStatus.Paused,
-                        statusLabel = "Paused",
-                        error = e.message ?: "Failed to send audio to the device",
+                        title = title,
+                        status = MusicPlaybackStatus.Playing,
+                        statusLabel = "Playing on device",
+                        durationMs = totalMs,
+                        positionMs = WavPcm.durationMsForPcmBytes(startPcmOffset)
+                            .coerceAtMost(totalMs.coerceAtLeast(1)),
+                        isPlaying = true,
+                        error = null,
                         active = true,
                     )
                 }
-                updateNotification(title, "Paused", playing = false)
+                updateNotification(title, "Playing on device", playing = true)
+
+                val completed = PlayWavFeed.streamLive(
+                    bot = bot,
+                    decoder = decoder,
+                    startPcmOffset = startPcmOffset,
+                    onPlayhead = { offset ->
+                        if (playGeneration.get() != generation) return@streamLive
+                        _state.update { state ->
+                            state.copy(
+                                positionMs = WavPcm.durationMsForPcmBytes(offset)
+                                    .coerceAtMost(totalMs.coerceAtLeast(1)),
+                            )
+                        }
+                    },
+                )
+                if (playGeneration.get() != generation) return
+                if (completed) {
+                    _state.update {
+                        it.copy(
+                            isPlaying = false,
+                            status = MusicPlaybackStatus.Stopped,
+                            statusLabel = "Finished",
+                            positionMs = it.durationMs,
+                            active = false,
+                            error = null,
+                        )
+                    }
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
+        } catch (_: CancellationException) {
+            // Expected when switching songs, seeking, or stopping.
+        } catch (e: Exception) {
+            if (playGeneration.get() != generation) return
+            Log.e("MusicStreamService", "feed failed", e)
+            _state.update {
+                it.copy(
+                    isPlaying = false,
+                    status = MusicPlaybackStatus.Paused,
+                    statusLabel = "Paused",
+                    error = e.message ?: "Failed to send audio to the device",
+                    active = true,
+                )
+            }
+            updateNotification(title, "Paused", playing = false)
         }
     }
 
@@ -222,17 +258,22 @@ class MusicStreamService : Service() {
         if (feedJob?.isActive != true && bot != null) {
             val uri = current.uri ?: return
             promoteForeground(current.title, "Playing on device", playing = true)
-            beginFeed(
-                bot = bot,
-                uri = Uri.parse(uri),
-                title = current.title,
-                durationMs = current.durationMs,
-                reset = false,
-            )
+            val generation = playGeneration.incrementAndGet()
+            feedJob = scope.launch {
+                beginFeed(
+                    bot = bot,
+                    uri = Uri.parse(uri),
+                    title = current.title,
+                    durationMs = current.durationMs,
+                    startPcmOffset = PlayWavFeed.nextSliceStart,
+                    generation = generation,
+                )
+            }
         }
     }
 
     private fun stopPlayback(userStop: Boolean) {
+        playGeneration.incrementAndGet()
         PlayWavFeed.cancel()
         PlayWavFeed.resetSliceStart()
         feedJob?.cancel()
@@ -252,6 +293,7 @@ class MusicStreamService : Service() {
                 statusLabel = if (userStop) "Stopped" else it.statusLabel,
                 positionMs = if (userStop) 0 else it.positionMs,
                 active = false,
+                error = null,
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -338,6 +380,7 @@ class MusicStreamService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_DURATION_MS = "durationMs"
         const val EXTRA_RESET = "reset"
+        const val EXTRA_SEEK_MS = "seekMs"
 
         private const val CHANNEL_ID = "nino_music_stream"
         private const val NOTIFICATION_ID = 42
@@ -348,13 +391,26 @@ class MusicStreamService : Service() {
         @Volatile
         private var activeBot: BotService? = null
 
-        fun play(context: Context, bot: BotService, item: MediaItem, reset: Boolean = true) {
+        fun play(
+            context: Context,
+            bot: BotService,
+            item: MediaItem,
+            reset: Boolean = true,
+            seekMs: Int? = null,
+        ) {
             val uri = item.uri ?: return
+            val startMs = seekMs?.coerceAtLeast(0) ?: if (reset) 0 else _state.value.positionMs
             _state.update {
                 it.copy(
                     uri = uri,
                     title = item.name,
                     durationMs = item.durationMs ?: it.durationMs,
+                    status = MusicPlaybackStatus.Preparing,
+                    statusLabel = if (seekMs != null) "Seeking…" else "Starting…",
+                    isPlaying = true,
+                    positionMs = startMs,
+                    error = null,
+                    active = true,
                 )
             }
             val intent = Intent(context, MusicStreamService::class.java).apply {
@@ -364,9 +420,14 @@ class MusicStreamService : Service() {
                 putExtra(EXTRA_URI, uri)
                 putExtra(EXTRA_TITLE, item.name)
                 putExtra(EXTRA_DURATION_MS, item.durationMs ?: 0)
-                putExtra(EXTRA_RESET, reset)
+                putExtra(EXTRA_RESET, reset && seekMs == null)
+                if (seekMs != null) putExtra(EXTRA_SEEK_MS, seekMs)
             }
             context.startForegroundService(intent)
+        }
+
+        fun seek(context: Context, bot: BotService, item: MediaItem, positionMs: Int) {
+            play(context = context, bot = bot, item = item, reset = false, seekMs = positionMs)
         }
 
         fun pause(context: Context) {
